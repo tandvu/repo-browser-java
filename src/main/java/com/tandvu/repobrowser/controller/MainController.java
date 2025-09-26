@@ -21,6 +21,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
+import java.util.prefs.Preferences;
 import java.util.stream.Collectors;
 
 /**
@@ -29,6 +30,15 @@ import java.util.stream.Collectors;
 public class MainController implements Initializable {
     
     private static final Logger logger = LoggerFactory.getLogger(MainController.class);
+    
+    // Preferences constants
+    private static final String PREF_REPOSITORY_PATH = "repository_path";
+    private static final String PREF_DEPLOYMENT_PATH = "deployment_path";
+    private static final String DEFAULT_REPOSITORY_PATH = "C:\\AMPT";
+    private static final String DEFAULT_DEPLOYMENT_PATH = "C:\\OPT";
+    
+    // Preferences instance
+    private final Preferences preferences = Preferences.userNodeForPackage(MainController.class);
     
     @FXML private TextField basePathField;
     @FXML private Button browseButton;
@@ -55,11 +65,8 @@ public class MainController implements Initializable {
     public void initialize(URL location, ResourceBundle resources) {
         logger.info("Initializing MainController");
         
-        // Set default base path
-        basePathField.setText("C:\\AMPT");
-        
-        // Set default deployment path
-        deploymentPathField.setText("C:\\OPT");
+        // Load saved paths from preferences
+        loadSavedPaths();
         
         // Setup table columns
         setupTableColumns();
@@ -78,6 +85,41 @@ public class MainController implements Initializable {
         performInitialScan();
         
         logger.info("MainController initialized successfully");
+    }
+    
+    /**
+     * Load saved paths from preferences
+     */
+    private void loadSavedPaths() {
+        // Load repository path
+        String savedRepositoryPath = preferences.get(PREF_REPOSITORY_PATH, DEFAULT_REPOSITORY_PATH);
+        basePathField.setText(savedRepositoryPath);
+        logger.info("Loaded repository path from preferences: {}", savedRepositoryPath);
+        
+        // Load deployment path
+        String savedDeploymentPath = preferences.get(PREF_DEPLOYMENT_PATH, DEFAULT_DEPLOYMENT_PATH);
+        deploymentPathField.setText(savedDeploymentPath);
+        logger.info("Loaded deployment path from preferences: {}", savedDeploymentPath);
+    }
+    
+    /**
+     * Save repository path to preferences
+     */
+    private void saveRepositoryPath(String path) {
+        if (path != null && !path.trim().isEmpty()) {
+            preferences.put(PREF_REPOSITORY_PATH, path.trim());
+            logger.info("Saved repository path to preferences: {}", path.trim());
+        }
+    }
+    
+    /**
+     * Save deployment path to preferences
+     */
+    private void saveDeploymentPath(String path) {
+        if (path != null && !path.trim().isEmpty()) {
+            preferences.put(PREF_DEPLOYMENT_PATH, path.trim());
+            logger.info("Saved deployment path to preferences: {}", path.trim());
+        }
     }
     
     private void setupTableColumns() {
@@ -110,17 +152,29 @@ public class MainController implements Initializable {
     }
     
     private void setupAutoScan() {
+        // Repository path listener for auto-scan and saving
         basePathField.textProperty().addListener((observable, oldValue, newValue) -> {
             if (newValue != null && !newValue.trim().isEmpty()) {
                 File dir = new File(newValue.trim());
                 if (dir.exists() && dir.isDirectory()) {
                     scanRepositories(Path.of(newValue.trim()));
+                    saveRepositoryPath(newValue.trim()); // Save to preferences when manually typed
                 }
             } else {
                 // Clear repositories when path is empty
                 repositories.clear();
                 filteredRepositories.clear();
                 updateStatusLabel();
+            }
+        });
+        
+        // Deployment path listener for saving
+        deploymentPathField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue != null && !newValue.trim().isEmpty()) {
+                File dir = new File(newValue.trim());
+                if (dir.exists() && dir.isDirectory()) {
+                    saveDeploymentPath(newValue.trim()); // Save to preferences when manually typed
+                }
             }
         });
     }
@@ -217,8 +271,10 @@ public class MainController implements Initializable {
         
         File selectedDirectory = directoryChooser.showDialog(browseButton.getScene().getWindow());
         if (selectedDirectory != null) {
-            basePathField.setText(selectedDirectory.getAbsolutePath());
-            logger.info("Selected repository path: {}", selectedDirectory.getAbsolutePath());
+            String newPath = selectedDirectory.getAbsolutePath();
+            basePathField.setText(newPath);
+            saveRepositoryPath(newPath); // Save to preferences
+            logger.info("Selected repository path: {}", newPath);
             // Scanning will happen automatically via the text field listener
         }
     }
@@ -239,8 +295,10 @@ public class MainController implements Initializable {
         
         File selectedDirectory = directoryChooser.showDialog(browseDeploymentButton.getScene().getWindow());
         if (selectedDirectory != null) {
-            deploymentPathField.setText(selectedDirectory.getAbsolutePath());
-            logger.info("Selected deployment path: {}", selectedDirectory.getAbsolutePath());
+            String newPath = selectedDirectory.getAbsolutePath();
+            deploymentPathField.setText(newPath);
+            saveDeploymentPath(newPath); // Save to preferences
+            logger.info("Selected deployment path: {}", newPath);
         }
     }
     
