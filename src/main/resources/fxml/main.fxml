@@ -47,6 +47,7 @@
                      <Label text="Filter:" minWidth="60.0" />
                      <Hyperlink text="Released" onAction="#openReleasedLink" />
                      <Button text="Paste" onAction="#handlePasteFromClipboard" />
+                     <Button text="Clear" onAction="#handleClearFilter" />
                   </children>
                </HBox>
                <TextArea fx:id="filterField"
@@ -66,6 +67,7 @@
             <TableColumn fx:id="nameColumn" text="Repository Name" prefWidth="200.0" />
             <TableColumn fx:id="repoVersionColumn" text="Repo Version" prefWidth="100.0" />
             <TableColumn fx:id="targetedVersionColumn" text="Targeted Version" prefWidth="120.0" />
+            <TableColumn fx:id="deploymentVersionColumn" text="Deployment Version" prefWidth="140.0" />
             <TableColumn fx:id="pathColumn" text="Path" prefWidth="300.0" />
          </columns>
          <columnResizePolicy>

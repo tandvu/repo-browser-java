@@ -55,6 +55,7 @@ public class MainController implements Initializable {
     @FXML private TableColumn<Repository, String> nameColumn;
     @FXML private TableColumn<Repository, String> repoVersionColumn;
     @FXML private TableColumn<Repository, String> targetedVersionColumn;
+    @FXML private TableColumn<Repository, String> deploymentVersionColumn;
     @FXML private TableColumn<Repository, String> pathColumn;
     @FXML private Label statusLabel;
     @FXML private ProgressBar progressBar;
@@ -143,6 +144,9 @@ public class MainController implements Initializable {
         // Targeted version column
         targetedVersionColumn.setCellValueFactory(new PropertyValueFactory<>("targetedVersion"));
         
+    // Deployment version column
+    deploymentVersionColumn.setCellValueFactory(new PropertyValueFactory<>("deploymentVersion"));
+
         // Repository path column  
         pathColumn.setCellValueFactory(new PropertyValueFactory<>("path"));
         
@@ -303,6 +307,7 @@ public class MainController implements Initializable {
                 File dir = new File(newValue.trim());
                 if (dir.exists() && dir.isDirectory()) {
                     saveDeploymentPath(newValue.trim()); // Save to preferences when manually typed
+                    updateDeploymentVersions(dir.toPath());
                 }
             }
         });
@@ -460,12 +465,75 @@ public class MainController implements Initializable {
             updateStatusLabel();
             updateHeaderCheckboxState();
             
+            // After scanning repositories, try updating deployment versions if deployment path is valid
+            String depPath = deploymentPathField.getText();
+            if (depPath != null && !depPath.isBlank()) {
+                File depDir = new File(depPath.trim());
+                if (depDir.exists() && depDir.isDirectory()) {
+                    updateDeploymentVersions(depDir.toPath());
+                }
+            }
+            
         } catch (Exception e) {
             logger.error("Error scanning repositories", e);
             showAlert("Error", "Failed to scan repositories: " + e.getMessage());
             statusLabel.setText("Error occurred during scanning");
         } finally {
             progressBar.setVisible(false);
+        }
+    }
+
+    /**
+     * Update deploymentVersion for repositories by scanning the deployment folder for .war files
+     * Expected filename pattern example: ampt-orgchart-3.4.0.war -> repo name: opt-orgchart, version: 3.4.0
+     */
+    private void updateDeploymentVersions(Path deploymentPath) {
+        try {
+            File depDir = deploymentPath.toFile();
+            if (!depDir.exists() || !depDir.isDirectory()) {
+                return;
+            }
+            // Build a map from repo key (e.g., orgchart) to version from WAR files
+            Map<String, String> deployedVersions = new HashMap<>();
+            File[] warFiles = depDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".war"));
+            if (warFiles != null) {
+                for (File war : warFiles) {
+                    String name = war.getName().toLowerCase();
+                    // Match ampt-<suffix>-<version>.war
+                    // capture suffix and version; allow dots and hyphens in version
+                    java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("^ampt-([a-z0-9-]+)-([0-9][a-z0-9.-]*)\\.war$")
+                        .matcher(name);
+                    if (m.find()) {
+                        String suffix = m.group(1);      // e.g., orgchart
+                        String version = m.group(2);     // e.g., 3.4.0 or 3.4.0-SNAPSHOT
+                        deployedVersions.put(suffix, version);
+                    }
+                }
+            }
+            
+            // Clear previous deployment versions
+            repositories.forEach(r -> r.setDeploymentVersion(""));
+            
+            if (!deployedVersions.isEmpty()) {
+                for (Repository repo : repositories) {
+                    String repoName = repo.getName().toLowerCase(); // e.g., opt-orgchart
+                    // map opt-<suffix> -> <suffix>
+                    if (repoName.startsWith("opt-")) {
+                        String suffix = repoName.substring(4);
+                        String version = deployedVersions.get(suffix);
+                        if (version != null) {
+                            repo.setDeploymentVersion(version);
+                        }
+                    }
+                }
+                repoTable.refresh();
+                logger.info("Updated deployment versions for {} repositories based on {} WAR files",
+                        repositories.stream().filter(r -> !r.getDeploymentVersion().isEmpty()).count(),
+                        deployedVersions.size());
+            }
+        } catch (Exception e) {
+            logger.error("Error updating deployment versions from {}", deploymentPath, e);
         }
     }
     
@@ -531,5 +599,14 @@ public class MainController implements Initializable {
             logger.error("Failed to paste from clipboard", e);
             showAlert("Error", "Failed to paste from clipboard: " + e.getMessage());
         }
+    }
+
+    /**
+     * Clear the filter TextArea
+     */
+    @FXML
+    private void handleClearFilter() {
+        filterField.clear();
+        logger.info("Cleared filter text");
     }
 }
