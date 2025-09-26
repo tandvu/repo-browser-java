@@ -50,6 +50,11 @@ public class RepositoryScanner {
                 
                 // Create repository entry
                 Repository repo = new Repository(dirName, dir.toString());
+                
+                // Try to detect repository version
+                String version = detectRepositoryVersion(dir);
+                repo.setRepoVersion(version);
+                
                 repositories.add(repo);
                 
                 logger.debug("Found repository: {} at {}", dirName, dir);
@@ -95,5 +100,63 @@ public class RepositoryScanner {
         }
         
         return false;
+    }
+    
+    /**
+     * Try to detect the version of a repository by examining common version files
+     * 
+     * @param repoPath The repository directory path
+     * @return The detected version or empty string if not found
+     */
+    private String detectRepositoryVersion(Path repoPath) {
+        // Try package.json for Node.js projects
+        Path packageJson = repoPath.resolve("package.json");
+        if (Files.exists(packageJson)) {
+            try {
+                String content = Files.readString(packageJson);
+                // Simple regex to extract version from package.json
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"");
+                java.util.regex.Matcher matcher = pattern.matcher(content);
+                if (matcher.find()) {
+                    return matcher.group(1);
+                }
+            } catch (Exception e) {
+                logger.debug("Error reading package.json for {}: {}", repoPath.getFileName(), e.getMessage());
+            }
+        }
+        
+        // Try pom.xml for Maven projects
+        Path pomXml = repoPath.resolve("pom.xml");
+        if (Files.exists(pomXml)) {
+            try {
+                String content = Files.readString(pomXml);
+                // Simple regex to extract version from pom.xml
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("<version>([^<]+)</version>");
+                java.util.regex.Matcher matcher = pattern.matcher(content);
+                if (matcher.find()) {
+                    return matcher.group(1);
+                }
+            } catch (Exception e) {
+                logger.debug("Error reading pom.xml for {}: {}", repoPath.getFileName(), e.getMessage());
+            }
+        }
+        
+        // Try build.gradle for Gradle projects
+        Path buildGradle = repoPath.resolve("build.gradle");
+        if (Files.exists(buildGradle)) {
+            try {
+                String content = Files.readString(buildGradle);
+                // Simple regex to extract version from build.gradle
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("version\\s*[=:]\\s*['\"]([^'\"]+)['\"]");
+                java.util.regex.Matcher matcher = pattern.matcher(content);
+                if (matcher.find()) {
+                    return matcher.group(1);
+                }
+            } catch (Exception e) {
+                logger.debug("Error reading build.gradle for {}: {}", repoPath.getFileName(), e.getMessage());
+            }
+        }
+        
+        return ""; // No version found
     }
 }

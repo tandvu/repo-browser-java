@@ -13,11 +13,15 @@ public class Repository {
     private final StringProperty name;
     private final StringProperty path;
     private final BooleanProperty selected;
+    private final StringProperty repoVersion;
+    private final StringProperty targetedVersion;
     
     public Repository(String name, String path) {
         this.name = new SimpleStringProperty(name);
         this.path = new SimpleStringProperty(path);
         this.selected = new SimpleBooleanProperty(false);
+        this.repoVersion = new SimpleStringProperty("");
+        this.targetedVersion = new SimpleStringProperty("");
     }
     
     // Name property
@@ -59,9 +63,36 @@ public class Repository {
         return selected;
     }
     
+    // Repo Version property
+    public String getRepoVersion() {
+        return repoVersion.get();
+    }
+    
+    public void setRepoVersion(String repoVersion) {
+        this.repoVersion.set(repoVersion != null ? repoVersion : "");
+    }
+    
+    public StringProperty repoVersionProperty() {
+        return repoVersion;
+    }
+    
+    // Targeted Version property
+    public String getTargetedVersion() {
+        return targetedVersion.get();
+    }
+    
+    public void setTargetedVersion(String targetedVersion) {
+        this.targetedVersion.set(targetedVersion != null ? targetedVersion : "");
+    }
+    
+    public StringProperty targetedVersionProperty() {
+        return targetedVersion;
+    }
+    
     @Override
     public String toString() {
-        return String.format("Repository{name='%s', path='%s', selected=%s}", getName(), getPath(), isSelected());
+        return String.format("Repository{name='%s', path='%s', selected=%s, repoVersion='%s', targetedVersion='%s'}", 
+            getName(), getPath(), isSelected(), getRepoVersion(), getTargetedVersion());
     }
     
     @Override

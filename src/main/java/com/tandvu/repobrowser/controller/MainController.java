@@ -16,7 +16,10 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.net.URL;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.ResourceBundle;
 import java.util.stream.Collectors;
 
@@ -29,11 +32,14 @@ public class MainController implements Initializable {
     
     @FXML private TextField basePathField;
     @FXML private Button browseButton;
-    @FXML private Button scanButton;
-    @FXML private TextField filterField;
+    @FXML private TextField deploymentPathField;
+    @FXML private Button browseDeploymentButton;
+    @FXML private TextArea filterField;
     @FXML private TableView<Repository> repoTable;
     @FXML private TableColumn<Repository, Boolean> selectedColumn;
     @FXML private TableColumn<Repository, String> nameColumn;
+    @FXML private TableColumn<Repository, String> repoVersionColumn;
+    @FXML private TableColumn<Repository, String> targetedVersionColumn;
     @FXML private TableColumn<Repository, String> pathColumn;
     @FXML private Button selectAllButton;
     @FXML private Button clearAllButton;
@@ -43,6 +49,7 @@ public class MainController implements Initializable {
     private final ObservableList<Repository> repositories = FXCollections.observableArrayList();
     private final ObservableList<Repository> filteredRepositories = FXCollections.observableArrayList();
     private final RepositoryScanner repositoryScanner = new RepositoryScanner();
+    private final Map<String, String> targetedVersions = new HashMap<>();
     
     @Override
     public void initialize(URL location, ResourceBundle resources) {
@@ -51,15 +58,24 @@ public class MainController implements Initializable {
         // Set default base path
         basePathField.setText("C:\\AMPT");
         
+        // Set default deployment path
+        deploymentPathField.setText("C:\\OPT");
+        
         // Setup table columns
         setupTableColumns();
         
         // Setup filter functionality
         setupFilter();
         
+        // Setup automatic scanning when path changes
+        setupAutoScan();
+        
         // Set initial status
-        statusLabel.setText("Ready - Select a base path and click Scan");
+        statusLabel.setText("Ready - Select a repository path to browse");
         progressBar.setVisible(false);
+        
+        // Perform initial scan if default path exists
+        performInitialScan();
         
         logger.info("MainController initialized successfully");
     }
@@ -72,6 +88,12 @@ public class MainController implements Initializable {
         
         // Repository name column
         nameColumn.setCellValueFactory(new PropertyValueFactory<>("name"));
+        
+        // Repo version column
+        repoVersionColumn.setCellValueFactory(new PropertyValueFactory<>("repoVersion"));
+        
+        // Targeted version column
+        targetedVersionColumn.setCellValueFactory(new PropertyValueFactory<>("targetedVersion"));
         
         // Repository path column  
         pathColumn.setCellValueFactory(new PropertyValueFactory<>("path"));
@@ -87,18 +109,93 @@ public class MainController implements Initializable {
         });
     }
     
+    private void setupAutoScan() {
+        basePathField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue != null && !newValue.trim().isEmpty()) {
+                File dir = new File(newValue.trim());
+                if (dir.exists() && dir.isDirectory()) {
+                    scanRepositories(Path.of(newValue.trim()));
+                }
+            } else {
+                // Clear repositories when path is empty
+                repositories.clear();
+                filteredRepositories.clear();
+                updateStatusLabel();
+            }
+        });
+    }
+    
+    private void performInitialScan() {
+        String initialPath = basePathField.getText();
+        if (initialPath != null && !initialPath.trim().isEmpty()) {
+            File dir = new File(initialPath);
+            if (dir.exists() && dir.isDirectory()) {
+                scanRepositories(Path.of(initialPath));
+            }
+        }
+    }
+    
     private void filterRepositories(String filter) {
         filteredRepositories.clear();
+        targetedVersions.clear();
+        
+        // Clear targeted versions from all repositories
+        repositories.forEach(repo -> repo.setTargetedVersion(""));
         
         if (filter == null || filter.trim().isEmpty()) {
             filteredRepositories.addAll(repositories);
         } else {
-            String lowerFilter = filter.toLowerCase().trim();
-            filteredRepositories.addAll(
-                repositories.stream()
-                    .filter(repo -> repo.getName().toLowerCase().contains(lowerFilter))
-                    .collect(Collectors.toList())
-            );
+            // Split filter text by lines and extract repository names and versions
+            String[] filterLines = filter.split("\\r?\\n");
+            List<String> repoNames = new ArrayList<>();
+            
+            for (String line : filterLines) {
+                String cleanLine = line.trim();
+                if (!cleanLine.isEmpty()) {
+                    // Split by tabs or multiple spaces to get parts
+                    String[] parts = cleanLine.split("[\\s\\t]+");
+                    if (parts.length >= 2) {
+                        String repoName = parts[0].toLowerCase();
+                        String version = parts[1];
+                        if (!repoName.isEmpty()) {
+                            repoNames.add(repoName);
+                            targetedVersions.put(repoName, version);
+                        }
+                    } else if (parts.length == 1) {
+                        // Just repository name, no version
+                        String repoName = parts[0].toLowerCase();
+                        if (!repoName.isEmpty()) {
+                            repoNames.add(repoName);
+                        }
+                    }
+                }
+            }
+            
+            if (repoNames.isEmpty()) {
+                filteredRepositories.addAll(repositories);
+            } else {
+                // Include repositories that match any of the extracted names
+                // and set their targeted versions
+                filteredRepositories.addAll(
+                    repositories.stream()
+                        .filter(repo -> {
+                            String repoNameLower = repo.getName().toLowerCase();
+                            String matchingFilter = repoNames.stream()
+                                .filter(filterName -> repoNameLower.contains(filterName) || filterName.contains(repoNameLower))
+                                .findFirst()
+                                .orElse(null);
+                            
+                            if (matchingFilter != null) {
+                                // Set the targeted version if available
+                                String targetedVersion = targetedVersions.get(matchingFilter);
+                                repo.setTargetedVersion(targetedVersion != null ? targetedVersion : "");
+                                return true;
+                            }
+                            return false;
+                        })
+                        .collect(Collectors.toList())
+                );
+            }
         }
         
         updateStatusLabel();
@@ -107,7 +204,7 @@ public class MainController implements Initializable {
     @FXML
     private void handleBrowseButton() {
         DirectoryChooser directoryChooser = new DirectoryChooser();
-        directoryChooser.setTitle("Select Base Path for Repository Scanning");
+        directoryChooser.setTitle("Select Repository Path for Browsing");
         
         // Set initial directory if current path exists
         String currentPath = basePathField.getText();
@@ -121,25 +218,30 @@ public class MainController implements Initializable {
         File selectedDirectory = directoryChooser.showDialog(browseButton.getScene().getWindow());
         if (selectedDirectory != null) {
             basePathField.setText(selectedDirectory.getAbsolutePath());
-            logger.info("Selected base path: {}", selectedDirectory.getAbsolutePath());
+            logger.info("Selected repository path: {}", selectedDirectory.getAbsolutePath());
+            // Scanning will happen automatically via the text field listener
         }
     }
     
     @FXML
-    private void handleScanButton() {
-        String basePath = basePathField.getText();
-        if (basePath == null || basePath.trim().isEmpty()) {
-            showAlert("Error", "Please select a base path first.");
-            return;
+    private void handleBrowseDeploymentButton() {
+        DirectoryChooser directoryChooser = new DirectoryChooser();
+        directoryChooser.setTitle("Select Deployment Path");
+        
+        // Set initial directory if current deployment path exists
+        String currentPath = deploymentPathField.getText();
+        if (currentPath != null && !currentPath.isEmpty()) {
+            File currentDir = new File(currentPath);
+            if (currentDir.exists() && currentDir.isDirectory()) {
+                directoryChooser.setInitialDirectory(currentDir);
+            }
         }
         
-        File baseDir = new File(basePath);
-        if (!baseDir.exists() || !baseDir.isDirectory()) {
-            showAlert("Error", "Selected path does not exist or is not a directory.");
-            return;
+        File selectedDirectory = directoryChooser.showDialog(browseDeploymentButton.getScene().getWindow());
+        if (selectedDirectory != null) {
+            deploymentPathField.setText(selectedDirectory.getAbsolutePath());
+            logger.info("Selected deployment path: {}", selectedDirectory.getAbsolutePath());
         }
-        
-        scanRepositories(Path.of(basePath));
     }
     
     private void scanRepositories(Path basePath) {
@@ -148,7 +250,6 @@ public class MainController implements Initializable {
         // Show progress
         progressBar.setVisible(true);
         statusLabel.setText("Scanning repositories...");
-        scanButton.setDisable(true);
         
         // Clear existing repositories
         repositories.clear();
@@ -168,7 +269,6 @@ public class MainController implements Initializable {
             statusLabel.setText("Error occurred during scanning");
         } finally {
             progressBar.setVisible(false);
-            scanButton.setDisable(false);
         }
     }
     

@@ -11,24 +11,36 @@
             <Insets bottom="10.0" left="10.0" right="10.0" top="10.0" />
          </padding>
          
-         <!-- Base Path Selection -->
+         <!-- Repository Path Selection -->
          <HBox alignment="CENTER_LEFT" spacing="10.0">
             <children>
-               <Label text="Base Path:" minWidth="80.0" />
-               <TextField fx:id="basePathField" prefWidth="400.0" promptText="Select base path to scan for repositories" />
+               <Label text="Repository Path:" minWidth="100.0" />
+               <TextField fx:id="basePathField" prefWidth="400.0" promptText="Select repository path to browse" />
                <Button fx:id="browseButton" text="Browse..." onAction="#handleBrowseButton" />
-               <Button fx:id="scanButton" text="Scan" onAction="#handleScanButton" styleClass="primary-button" />
+            </children>
+         </HBox>
+         
+         <!-- Deployment Path Selection -->
+         <HBox alignment="CENTER_LEFT" spacing="10.0">
+            <children>
+               <Label text="Deployment Path:" minWidth="100.0" />
+               <TextField fx:id="deploymentPathField" prefWidth="400.0" promptText="Select deployment path for selected repositories" />
+               <Button fx:id="browseDeploymentButton" text="Browse..." onAction="#handleBrowseDeploymentButton" />
             </children>
          </HBox>
          
          <!-- Filter and Controls -->
-         <HBox alignment="CENTER_LEFT" spacing="10.0">
+         <HBox alignment="TOP_LEFT" spacing="10.0">
             <children>
                <Label text="Filter:" minWidth="80.0" />
-               <TextField fx:id="filterField" prefWidth="200.0" promptText="Filter repositories by name..." />
+               <TextArea fx:id="filterField" prefWidth="200.0" prefHeight="60.0" promptText="Paste repository list (name&#9;version format)..." wrapText="true" />
                <Region HBox.hgrow="ALWAYS" />
-               <Button fx:id="selectAllButton" text="Select All" onAction="#handleSelectAll" />
-               <Button fx:id="clearAllButton" text="Clear All" onAction="#handleClearAll" />
+               <VBox spacing="5.0">
+                  <children>
+                     <Button fx:id="selectAllButton" text="Select All" onAction="#handleSelectAll" />
+                     <Button fx:id="clearAllButton" text="Clear All" onAction="#handleClearAll" />
+                  </children>
+               </VBox>
             </children>
          </HBox>
       </VBox>
@@ -40,7 +52,9 @@
          <columns>
             <TableColumn fx:id="selectedColumn" text="Selected" prefWidth="80.0" resizable="false" />
             <TableColumn fx:id="nameColumn" text="Repository Name" prefWidth="200.0" />
-            <TableColumn fx:id="pathColumn" text="Path" prefWidth="400.0" />
+            <TableColumn fx:id="repoVersionColumn" text="Repo Version" prefWidth="100.0" />
+            <TableColumn fx:id="targetedVersionColumn" text="Targeted Version" prefWidth="120.0" />
+            <TableColumn fx:id="pathColumn" text="Path" prefWidth="300.0" />
          </columns>
          <columnResizePolicy>
             <TableView fx:constant="CONSTRAINED_RESIZE_POLICY" />
