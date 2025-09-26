@@ -34,13 +34,6 @@
             <children>
                <Label text="Filter:" minWidth="80.0" />
                <TextArea fx:id="filterField" prefWidth="200.0" prefHeight="60.0" promptText="Paste repository list (name&#9;version format)..." wrapText="true" />
-               <Region HBox.hgrow="ALWAYS" />
-               <VBox spacing="5.0">
-                  <children>
-                     <Button fx:id="selectAllButton" text="Select All" onAction="#handleSelectAll" />
-                     <Button fx:id="clearAllButton" text="Clear All" onAction="#handleClearAll" />
-                  </children>
-               </VBox>
             </children>
          </HBox>
       </VBox>

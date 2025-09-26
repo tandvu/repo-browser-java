@@ -3,6 +3,7 @@ package com.tandvu.repobrowser.controller;
 import com.tandvu.repobrowser.model.Repository;
 import com.tandvu.repobrowser.service.RepositoryScanner;
 import javafx.collections.FXCollections;
+import javafx.collections.ListChangeListener;
 import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
@@ -51,8 +52,6 @@ public class MainController implements Initializable {
     @FXML private TableColumn<Repository, String> repoVersionColumn;
     @FXML private TableColumn<Repository, String> targetedVersionColumn;
     @FXML private TableColumn<Repository, String> pathColumn;
-    @FXML private Button selectAllButton;
-    @FXML private Button clearAllButton;
     @FXML private Label statusLabel;
     @FXML private ProgressBar progressBar;
     
@@ -123,10 +122,13 @@ public class MainController implements Initializable {
     }
     
     private void setupTableColumns() {
-        // Selected column with checkboxes
+        // Selected column with checkboxes and header checkbox
         selectedColumn.setCellValueFactory(new PropertyValueFactory<>("selected"));
         selectedColumn.setCellFactory(CheckBoxTableCell.forTableColumn(selectedColumn));
         selectedColumn.setEditable(true);
+        
+        // Add header checkbox for select all/clear all
+        setupHeaderCheckbox();
         
         // Repository name column
         nameColumn.setCellValueFactory(new PropertyValueFactory<>("name"));
@@ -143,6 +145,129 @@ public class MainController implements Initializable {
         // Make table editable for checkboxes
         repoTable.setEditable(true);
         repoTable.setItems(filteredRepositories);
+        
+        // Setup row factory for click-to-select functionality
+        setupRowFactory();
+    }
+    
+    /**
+     * Setup row factory for click-to-select functionality and visual styling
+     */
+    private void setupRowFactory() {
+        repoTable.setRowFactory(tv -> {
+            TableRow<Repository> row = new TableRow<Repository>() {
+                @Override
+                protected void updateItem(Repository repository, boolean empty) {
+                    super.updateItem(repository, empty);
+                    
+                    if (empty || repository == null) {
+                        getStyleClass().remove("repository-selected");
+                    } else {
+                        // Update row styling based on selection state
+                        updateRowStyle(repository);
+                        
+                        // Listen for changes to the repository's selected property for visual updates
+                        repository.selectedProperty().addListener((obs, wasSelected, isSelected) -> {
+                            updateRowStyle(repository);
+                        });
+                    }
+                }
+                
+                private void updateRowStyle(Repository repository) {
+                    if (repository.isSelected()) {
+                        if (!getStyleClass().contains("repository-selected")) {
+                            getStyleClass().add("repository-selected");
+                        }
+                    } else {
+                        getStyleClass().remove("repository-selected");
+                    }
+                }
+            };
+            
+            // Add click handler to toggle selection
+            row.setOnMouseClicked(event -> {
+                if (!row.isEmpty()) {
+                    Repository repository = row.getItem();
+                    if (repository != null) {
+                        boolean newSelection = !repository.isSelected();
+                        repository.setSelected(newSelection);
+                        
+                        logger.info("Repository '{}' {} via row click", 
+                            repository.getName(), 
+                            newSelection ? "selected" : "deselected");
+                        
+                        // Note: updateStatusLabel() and updateHeaderCheckboxState() 
+                        // will be called automatically by the listener in scanRepositories
+                    }
+                }
+            });
+            
+            return row;
+        });
+    }
+    
+    /**
+     * Setup header checkbox for select all/clear all functionality
+     */
+    private void setupHeaderCheckbox() {
+        CheckBox headerCheckBox = new CheckBox();
+        headerCheckBox.setSelected(false);
+        
+        // Set the checkbox as the column header graphic
+        selectedColumn.setGraphic(headerCheckBox);
+        
+        // Handle header checkbox action
+        headerCheckBox.setOnAction(event -> {
+            boolean isSelected = headerCheckBox.isSelected();
+            
+            // Apply to all visible (filtered) repositories
+            filteredRepositories.forEach(repo -> repo.setSelected(isSelected));
+            repoTable.refresh();
+            
+            if (isSelected) {
+                logger.info("Selected all visible repositories via header checkbox");
+            } else {
+                logger.info("Cleared all repository selections via header checkbox");
+            }
+            
+            updateStatusLabel();
+        });
+    }
+    
+    /**
+     * Update the header checkbox state based on current selections
+     */
+    private void updateHeaderCheckboxState() {
+        CheckBox headerCheckBox = (CheckBox) selectedColumn.getGraphic();
+        if (headerCheckBox == null || filteredRepositories.isEmpty()) {
+            if (headerCheckBox != null) {
+                headerCheckBox.setIndeterminate(false);
+                headerCheckBox.setSelected(false);
+            }
+            return;
+        }
+        
+        long selectedCount = filteredRepositories.stream()
+            .mapToLong(repo -> repo.isSelected() ? 1 : 0)
+            .sum();
+        
+        // Temporarily remove the action listener to avoid recursion
+        var currentAction = headerCheckBox.getOnAction();
+        headerCheckBox.setOnAction(null);
+        
+        if (selectedCount == 0) {
+            headerCheckBox.setIndeterminate(false);
+            headerCheckBox.setSelected(false);
+        } else if (selectedCount == filteredRepositories.size()) {
+            headerCheckBox.setIndeterminate(false);
+            headerCheckBox.setSelected(true);
+        } else {
+            headerCheckBox.setIndeterminate(true);
+            headerCheckBox.setSelected(false);
+        }
+        
+        // Restore the action listener
+        headerCheckBox.setOnAction(currentAction);
     }
     
     private void setupFilter() {
@@ -253,6 +378,7 @@ public class MainController implements Initializable {
         }
         
         updateStatusLabel();
+        updateHeaderCheckboxState();
     }
     
     @FXML
@@ -318,8 +444,17 @@ public class MainController implements Initializable {
             repositories.addAll(foundRepos);
             filteredRepositories.addAll(foundRepos);
             
+            // Add listeners to each repository to update header checkbox
+            foundRepos.forEach(repo -> {
+                repo.selectedProperty().addListener((observable, oldValue, newValue) -> {
+                    updateHeaderCheckboxState();
+                    updateStatusLabel();
+                });
+            });
+            
             logger.info("Found {} repositories", foundRepos.size());
             updateStatusLabel();
+            updateHeaderCheckboxState();
             
         } catch (Exception e) {
             logger.error("Error scanning repositories", e);
@@ -328,20 +463,6 @@ public class MainController implements Initializable {
         } finally {
             progressBar.setVisible(false);
         }
-    }
-    
-    @FXML
-    private void handleSelectAll() {
-        repositories.forEach(repo -> repo.setSelected(true));
-        repoTable.refresh();
-        logger.info("Selected all repositories");
-    }
-    
-    @FXML
-    private void handleClearAll() {
-        repositories.forEach(repo -> repo.setSelected(false));
-        repoTable.refresh();
-        logger.info("Cleared all repository selections");
     }
     
     private void updateStatusLabel() {

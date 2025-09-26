@@ -128,3 +128,62 @@
 .check-box:selected .box {
   -fx-border-color: #007acc;
 }
+
+/* Custom styles for repository selection */
+.repository-selected {
+  -fx-background-color: #add8e6 !important; /* Light blue background */
+  -fx-text-fill: black !important; /* Keep text black */
+}
+
+.repository-selected .table-cell {
+  -fx-text-fill: black !important; /* Ensure all cells have black text */
+  -fx-background-color: transparent !important; /* Let the row background show through */
+}
+
+.repository-selected:hover {
+  -fx-background-color: #87ceeb !important; /* Slightly darker blue on hover */
+  -fx-text-fill: black !important;
+}
+
+.repository-selected:hover .table-cell {
+  -fx-text-fill: black !important; /* Force black text on hover */
+}
+
+.repository-selected:selected {
+  -fx-background-color: #add8e6 !important; /* Keep our light blue, not default selection */
+  -fx-text-fill: black !important;
+}
+
+.repository-selected:selected .table-cell {
+  -fx-text-fill: black !important; /* Force black text when selected */
+}
+
+.repository-selected:focused {
+  -fx-background-color: #add8e6 !important; /* Keep our light blue when focused */
+  -fx-text-fill: black !important;
+}
+
+.repository-selected:focused .table-cell {
+  -fx-text-fill: black !important; /* Force black text when focused */
+}
+
+.table-row-cell {
+  -fx-cursor: hand; /* Show hand cursor to indicate clickable rows */
+}
+
+/* Override default table selection styles to prevent white text */
+.table-row-cell:selected {
+  -fx-text-fill: black !important;
+}
+
+.table-row-cell:selected .table-cell {
+  -fx-text-fill: black !important;
+}
+
+.table-row-cell:focused {
+  -fx-text-fill: black !important;
+}
+
+.table-row-cell:focused .table-cell {
+  -fx-text-fill: black !important;
+}
