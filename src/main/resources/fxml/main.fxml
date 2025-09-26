@@ -6,37 +6,56 @@
 
 <BorderPane xmlns="http://javafx.com/javafx/11.0.1" xmlns:fx="http://javafx.com/fxml/1" fx:controller="com.tandvu.repobrowser.controller.MainController">
    <top>
-      <VBox spacing="10.0">
+      <!-- Split top area into two 50/50 columns: left = paths, right = filter + link -->
+      <GridPane hgap="10.0" vgap="10.0">
          <padding>
             <Insets bottom="10.0" left="10.0" right="10.0" top="10.0" />
          </padding>
-         
-         <!-- Repository Path Selection -->
-         <HBox alignment="CENTER_LEFT" spacing="10.0">
+         <columnConstraints>
+            <ColumnConstraints percentWidth="50.0" hgrow="ALWAYS" />
+            <ColumnConstraints percentWidth="50.0" hgrow="ALWAYS" />
+         </columnConstraints>
+
+         <!-- Left column: Repository & Deployment paths stacked at the top -->
+         <VBox GridPane.columnIndex="0" spacing="10.0">
             <children>
-               <Label text="Repository Path:" minWidth="100.0" />
-               <TextField fx:id="basePathField" prefWidth="400.0" promptText="Select repository path to browse" />
-               <Button fx:id="browseButton" text="Browse..." onAction="#handleBrowseButton" />
+               <!-- Repository Path Selection -->
+               <HBox alignment="CENTER_LEFT" spacing="8.0">
+                  <children>
+                     <Label text="Repository Path:" minWidth="120.0" />
+                     <TextField fx:id="basePathField" promptText="Select repository path to browse" HBox.hgrow="ALWAYS" />
+                     <Button fx:id="browseButton" text="Browse..." onAction="#handleBrowseButton" />
+                  </children>
+               </HBox>
+
+               <!-- Deployment Path Selection -->
+               <HBox alignment="CENTER_LEFT" spacing="8.0">
+                  <children>
+                     <Label text="Deployment Path:" minWidth="120.0" />
+                     <TextField fx:id="deploymentPathField" promptText="Select deployment path for selected repositories" HBox.hgrow="ALWAYS" />
+                     <Button fx:id="browseDeploymentButton" text="Browse..." onAction="#handleBrowseDeploymentButton" />
+                  </children>
+               </HBox>
             </children>
-         </HBox>
-         
-         <!-- Deployment Path Selection -->
-         <HBox alignment="CENTER_LEFT" spacing="10.0">
+         </VBox>
+
+         <!-- Right column: Filter label + Released on one line, TextArea below -->
+         <VBox GridPane.columnIndex="1" spacing="8.0">
             <children>
-               <Label text="Deployment Path:" minWidth="100.0" />
-               <TextField fx:id="deploymentPathField" prefWidth="400.0" promptText="Select deployment path for selected repositories" />
-               <Button fx:id="browseDeploymentButton" text="Browse..." onAction="#handleBrowseDeploymentButton" />
+               <HBox alignment="CENTER_LEFT" spacing="10.0">
+                  <children>
+                     <Label text="Filter:" minWidth="60.0" />
+                     <Hyperlink text="Released" onAction="#openReleasedLink" />
+                     <Button text="Paste" onAction="#handlePasteFromClipboard" />
+                  </children>
+               </HBox>
+               <TextArea fx:id="filterField"
+                         promptText="Paste repository list (name&#9;version format)..."
+                         wrapText="true"
+                         prefHeight="180.0" />
             </children>
-         </HBox>
-         
-         <!-- Filter and Controls -->
-         <HBox alignment="TOP_LEFT" spacing="10.0">
-            <children>
-               <Label text="Filter:" minWidth="80.0" />
-               <TextArea fx:id="filterField" prefWidth="200.0" prefHeight="60.0" promptText="Paste repository list (name&#9;version format)..." wrapText="true" />
-            </children>
-         </HBox>
-      </VBox>
+         </VBox>
+      </GridPane>
    </top>
    
    <center>

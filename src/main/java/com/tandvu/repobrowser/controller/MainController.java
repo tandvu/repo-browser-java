@@ -10,11 +10,15 @@ import javafx.fxml.Initializable;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.CheckBoxTableCell;
 import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.stage.DirectoryChooser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.awt.Desktop;
+import java.net.URI;
 import java.net.URL;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -485,5 +489,47 @@ public class MainController implements Initializable {
         alert.setHeaderText(null);
         alert.setContentText(message);
         alert.showAndWait();
+    }
+
+    /**
+     * Open the Released hyperlink target in the system browser
+     */
+    @FXML
+    private void openReleasedLink() {
+        final String url = "https://www.trmc.osd.mil/wiki/spaces/MINERVA/pages/194219554/AMPT+Releases";
+        try {
+            if (Desktop.isDesktopSupported()) {
+                Desktop.getDesktop().browse(URI.create(url));
+                logger.info("Opened Released link: {}", url);
+            } else {
+                logger.warn("Desktop browsing is not supported on this platform");
+                showAlert("Unsupported", "Opening links is not supported on this platform.");
+            }
+        } catch (Exception e) {
+            logger.error("Failed to open Released link", e);
+            showAlert("Error", "Failed to open link: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Paste clipboard text into the filter TextArea
+     */
+    @FXML
+    private void handlePasteFromClipboard() {
+        try {
+            Clipboard clipboard = Clipboard.getSystemClipboard();
+            if (clipboard != null && clipboard.hasString()) {
+                String text = clipboard.getString();
+                if (text != null) {
+                    filterField.setText(text);
+                    logger.info("Pasted {} characters from clipboard into filter", text.length());
+                }
+            } else {
+                showAlert("Clipboard", "Clipboard has no text to paste.");
+            }
+        } catch (Exception e) {
+            logger.error("Failed to paste from clipboard", e);
+            showAlert("Error", "Failed to paste from clipboard: " + e.getMessage());
+        }
     }
 }
