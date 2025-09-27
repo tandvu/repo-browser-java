@@ -79,7 +79,8 @@
                   <Insets left="10.0" right="10.0" />
                </padding>
                <children>
-                  <Button fx:id="buildMasterButton" text="Build Master" onAction="#handleBuildMaster" prefWidth="120.0" />
+                  <Button fx:id="buildMasterButton" text="Build Master &amp; Deploy" onAction="#handleBuildMaster" prefWidth="160.0" />
+                  <Button fx:id="refreshButton" text="Refresh" onAction="#handleRefresh" prefWidth="80.0" />
                </children>
             </HBox>
             
@@ -90,6 +91,7 @@
                   <TableView fx:id="repoTable" tableMenuButtonVisible="true">
                      <columns>
                         <TableColumn fx:id="selectedColumn" text="Selected" prefWidth="80.0" resizable="false" />
+                        <TableColumn fx:id="ignoreColumn" text="Ignore" prefWidth="80.0" resizable="false" />
                         <TableColumn fx:id="nameColumn" text="Repository Name" prefWidth="200.0" />
                         <TableColumn fx:id="repoVersionColumn" text="Repo Version" prefWidth="100.0" />
                         <TableColumn fx:id="targetedVersionColumn" text="Targeted Version" prefWidth="120.0" />

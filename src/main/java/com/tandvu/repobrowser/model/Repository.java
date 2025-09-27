@@ -16,6 +16,7 @@ public class Repository {
     private final StringProperty repoVersion;
     private final StringProperty targetedVersion;
     private final StringProperty deploymentVersion;
+    private final BooleanProperty ignore; // Added ignore property
     
     public Repository(String name, String path) {
         this.name = new SimpleStringProperty(name);
@@ -24,6 +25,7 @@ public class Repository {
         this.repoVersion = new SimpleStringProperty("");
         this.targetedVersion = new SimpleStringProperty("");
         this.deploymentVersion = new SimpleStringProperty("");
+        this.ignore = new SimpleBooleanProperty(false); // Initialize ignore property
     }
     
     // Name property
@@ -102,6 +104,19 @@ public class Repository {
     
     public StringProperty deploymentVersionProperty() {
         return deploymentVersion;
+    }
+    
+    // Ignore property
+    public boolean isIgnore() {
+        return ignore.get();
+    }
+    
+    public void setIgnore(boolean ignore) {
+        this.ignore.set(ignore);
+    }
+    
+    public BooleanProperty ignoreProperty() {
+        return ignore;
     }
     
     @Override

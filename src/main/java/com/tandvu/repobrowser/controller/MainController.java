@@ -62,6 +62,7 @@ public class MainController implements Initializable {
     
     // Preferences instance
     private final Preferences preferences = Preferences.userNodeForPackage(MainController.class);
+    private static final String PREF_IGNORE_MAP = "ignore_map";
     
     @FXML private TextField basePathField;
     @FXML private Button browseButton;
@@ -71,6 +72,7 @@ public class MainController implements Initializable {
     @FXML private TextArea filterField;
     @FXML private TableView<Repository> repoTable;
     @FXML private TableColumn<Repository, Boolean> selectedColumn;
+    @FXML private TableColumn<Repository, Boolean> ignoreColumn;
     @FXML private TableColumn<Repository, String> nameColumn;
     @FXML private TableColumn<Repository, String> repoVersionColumn;
     @FXML private TableColumn<Repository, String> targetedVersionColumn;
@@ -78,6 +80,8 @@ public class MainController implements Initializable {
     private TableColumn<Repository, String> deploymentVersionColumn;
     @FXML
     private Button buildMasterButton;
+    @FXML
+    private Button refreshButton;
     @FXML
     private VBox buildLogContainer;
     @FXML
@@ -107,11 +111,19 @@ public class MainController implements Initializable {
         // Setup table columns
         setupTableColumns();
         
+        // Ensure all columns are visible and table is editable
+        repoTable.setEditable(true);
+        repoTable.getColumns().forEach(col -> col.setVisible(true));
+        repoTable.refresh();
+
         // Setup filter functionality
         setupFilter();
         
         // Setup automatic scanning when path changes
         setupAutoScan();
+        
+        // Setup build button state management
+        setupBuildButtonState();
         
         // Set initial status
         statusLabel.setText("Ready - Select a repository path to browse");
@@ -200,9 +212,14 @@ public class MainController implements Initializable {
     
     private void setupTableColumns() {
         // Selected column with checkboxes and header checkbox
-        selectedColumn.setCellValueFactory(new PropertyValueFactory<>("selected"));
-        selectedColumn.setCellFactory(CheckBoxTableCell.forTableColumn(selectedColumn));
-        selectedColumn.setEditable(true);
+    selectedColumn.setCellValueFactory(new PropertyValueFactory<>("selected"));
+    selectedColumn.setCellFactory(CheckBoxTableCell.forTableColumn(selectedColumn));
+    selectedColumn.setEditable(true);
+
+    // Ignore column with checkboxes
+    ignoreColumn.setCellValueFactory(new PropertyValueFactory<>("ignore"));
+    ignoreColumn.setCellFactory(CheckBoxTableCell.forTableColumn(ignoreColumn));
+    ignoreColumn.setEditable(true);
         
         // Add header checkbox for select all/clear all
         setupHeaderCheckbox();
@@ -229,69 +246,52 @@ public class MainController implements Initializable {
      * Setup row factory for click-to-select functionality and visual styling
      */
     private void setupRowFactory() {
-        repoTable.setRowFactory(tv -> {
-            TableRow<Repository> row = new TableRow<Repository>() {
-                @Override
-                protected void updateItem(Repository repository, boolean empty) {
-                    super.updateItem(repository, empty);
-                    
-                    if (empty || repository == null) {
-                        getStyleClass().removeAll("repository-selected", "version-mismatch");
-                    } else {
-                        // Update row styling based on selection state
-                        updateRowStyle(repository);
-                        
-                        // Check for version mismatch and apply styling
-                        updateVersionMismatchStyle(repository);
-                    }
-                }
-                
-                private void updateRowStyle(Repository repository) {
-                    if (repository != null && repository.isSelected()) {
-                        if (!getStyleClass().contains("repository-selected")) {
-                            getStyleClass().add("repository-selected");
+        repoTable.setRowFactory(tv -> new TableRow<Repository>() {
+            @Override
+            public void updateItem(Repository repo, boolean empty) {
+                super.updateItem(repo, empty);
+                if (repo == null || empty) {
+                    setStyle("");
+                    setDisable(false);
+                } else {
+                    // Highlight if versions mismatch and ignore is not checked
+                    boolean mismatch = false;
+                    if (!repo.isIgnore()) {
+                        String repoVer = repo.getRepoVersion();
+                        String depVer = repo.getDeploymentVersion();
+                        if (repoVer != null && !repoVer.isBlank() && depVer != null && !depVer.isBlank() && !repoVer.equals(depVer)) {
+                            mismatch = true;
                         }
-                    } else {
-                        getStyleClass().remove("repository-selected");
-                    }
-                }
-                
-                private void updateVersionMismatchStyle(Repository repository) {
-                    if (repository != null) {
-                        boolean hasMismatch = hasVersionMismatch(repository);
-                        if (hasMismatch) {
-                            if (!getStyleClass().contains("version-mismatch")) {
-                                getStyleClass().add("version-mismatch");
-                            }
-                        } else {
-                            getStyleClass().remove("version-mismatch");
+                        // Also flag if repoVer is present and depVer is empty
+                        if (repoVer != null && !repoVer.isBlank() && (depVer == null || depVer.isBlank())) {
+                            mismatch = true;
                         }
                     }
-                }
-            };
-            
-            // Add click handler to toggle selection
-            row.setOnMouseClicked(event -> {
-                if (!row.isEmpty()) {
-                    Repository repository = row.getItem();
-                    if (repository != null) {
-                        boolean newSelection = !repository.isSelected();
-                        repository.setSelected(newSelection);
-                        
-                        logger.info("Repository '{}' {} via row click", 
-                            repository.getName(), 
-                            newSelection ? "selected" : "deselected");
-                        
-                        // Refresh the table to update all row styles
+                    setStyle(mismatch ? "-fx-background-color: #ffe0e0;" : "");
+                    // Listen for changes to ignore property
+                    repo.ignoreProperty().addListener((obs, wasIgnored, isIgnored) -> {
+                        if (isIgnored) {
+                            repo.setSelected(false);
+                        }
                         repoTable.refresh();
-                        
-                        // Note: updateStatusLabel() and updateHeaderCheckboxState() 
-                        // will be called automatically by the listener in scanRepositories
-                    }
+                    });
                 }
-            });
-            
-            return row;
+            }
+        });
+
+        // Custom cell factory for Selected column to disable checkbox if Ignore is checked
+        selectedColumn.setCellFactory(col -> new CheckBoxTableCell<Repository, Boolean>() {
+            @Override
+            public void updateItem(Boolean selected, boolean empty) {
+                super.updateItem(selected, empty);
+                TableRow<Repository> row = getTableRow();
+                Repository repo = row == null ? null : row.getItem();
+                if (repo != null && repo.isIgnore()) {
+                    setDisable(true);
+                } else {
+                    setDisable(false);
+                }
+            }
         });
     }
     
@@ -320,6 +320,7 @@ public class MainController implements Initializable {
             }
             
             updateStatusLabel();
+            updateBuildButtonState();
         });
     }
     
@@ -379,6 +380,7 @@ public class MainController implements Initializable {
                 repositories.clear();
                 filteredRepositories.clear();
                 updateStatusLabel();
+                updateBuildButtonState();
             }
         });
         
@@ -392,6 +394,36 @@ public class MainController implements Initializable {
                 }
             }
         });
+    }
+    
+    /**
+     * Setup build button state management based on repository selection
+     */
+    private void setupBuildButtonState() {
+        // Initially disable the button since no repositories are selected
+        if (buildMasterButton != null) {
+            buildMasterButton.setDisable(true);
+        }
+        
+        // Add listener to repository list to update button state when selection changes
+        repositories.addListener((ListChangeListener<Repository>) change -> {
+            updateBuildButtonState();
+        });
+        
+        // Also listen to filtered list changes
+        filteredRepositories.addListener((ListChangeListener<Repository>) change -> {
+            updateBuildButtonState();
+        });
+    }
+    
+    /**
+     * Update build button state based on repository selection
+     */
+    private void updateBuildButtonState() {
+        if (buildMasterButton != null) {
+            boolean hasSelectedRepos = repositories.stream().anyMatch(Repository::isSelected);
+            buildMasterButton.setDisable(!hasSelectedRepos);
+        }
     }
     
     private void performInitialScan() {
@@ -520,41 +552,64 @@ public class MainController implements Initializable {
     
     private void scanRepositories(Path basePath) {
         logger.info("Scanning repositories in: {}", basePath);
-        
+
         // Show progress
         progressBar.setVisible(true);
         statusLabel.setText("Scanning repositories...");
-        
+
         // Clear existing repositories
         repositories.clear();
         filteredRepositories.clear();
-        
+
         try {
             List<Repository> foundRepos = repositoryScanner.scanForRepositories(basePath);
+            // Load ignore map from preferences
+            String ignoreMapStr = preferences.get(PREF_IGNORE_MAP, "");
+            Map<String, Boolean> ignoreMap = new HashMap<>();
+            if (!ignoreMapStr.isEmpty()) {
+                for (String entry : ignoreMapStr.split(";")) {
+                    String[] kv = entry.split(":");
+                    if (kv.length == 2) {
+                        ignoreMap.put(kv[0], Boolean.parseBoolean(kv[1]));
+                    }
+                }
+            }
             repositories.addAll(foundRepos);
-            
+
             // Add opt-soa repository from SOA Path if it exists
             addSoaRepository();
-            
+
+            // Restore ignore state for each repo
+            for (Repository repo : repositories) {
+                if (ignoreMap.containsKey(repo.getName())) {
+                    repo.setIgnore(ignoreMap.get(repo.getName()));
+                }
+            }
+
             // Sort all repositories (including opt-soa) alphabetically by name
             repositories.sort((r1, r2) -> r1.getName().compareToIgnoreCase(r2.getName()));
-            
+
             filteredRepositories.addAll(repositories);
-            
-            // Add listeners to each repository to update header checkbox
+
+            // Add listeners to each repository to update header checkbox and persist ignore state
             repositories.forEach(repo -> {
                 repo.selectedProperty().addListener((observable, oldValue, newValue) -> {
                     updateHeaderCheckboxState();
                     updateStatusLabel();
-                    // Refresh the table to update row styles
+                    updateBuildButtonState();
+                    Platform.runLater(() -> repoTable.refresh());
+                });
+                repo.ignoreProperty().addListener((observable, oldValue, newValue) -> {
+                    saveIgnoreMap();
                     Platform.runLater(() -> repoTable.refresh());
                 });
             });
-            
+
             logger.info("Found {} repositories", repositories.size());
             updateStatusLabel();
             updateHeaderCheckboxState();
-            
+            updateBuildButtonState();
+
             // After scanning repositories, try updating deployment versions if deployment path is valid
             String depPath = deploymentPathField.getText();
             if (depPath != null && !depPath.isBlank()) {
@@ -563,7 +618,6 @@ public class MainController implements Initializable {
                     updateDeploymentVersions(depDir.toPath());
                 }
             }
-            
         } catch (Exception e) {
             logger.error("Error scanning repositories", e);
             showAlert("Error", "Failed to scan repositories: " + e.getMessage());
@@ -573,31 +627,39 @@ public class MainController implements Initializable {
         }
     }
 
+    private void saveIgnoreMap() {
+        StringBuilder sb = new StringBuilder();
+        for (Repository repo : repositories) {
+            sb.append(repo.getName()).append(":").append(repo.isIgnore()).append(";");
+        }
+        preferences.put(PREF_IGNORE_MAP, sb.toString());
+    }
+
     /**
      * Add opt-soa repository from the SOA Path if the directory exists
      */
     private void addSoaRepository() {
         String soaPath = soaPathLabel.getText();
         logger.info("Attempting to add opt-soa from SOA Path: '{}'", soaPath);
-        
+
         if (soaPath != null && !soaPath.trim().isEmpty()) {
             // Normalize path separators for Windows
             String normalizedPath = soaPath.trim().replace('/', File.separatorChar).replace('\\', File.separatorChar);
             File soaDir = new File(normalizedPath);
-            
+
             logger.info("Checking if SOA directory exists: '{}' -> exists: {}, isDirectory: {}", 
                 normalizedPath, soaDir.exists(), soaDir.isDirectory());
-            
+
             if (soaDir.exists() && soaDir.isDirectory()) {
                 // Check if opt-soa already exists in the list (avoid duplicates)
                 boolean alreadyExists = repositories.stream()
                     .anyMatch(repo -> "opt-soa".equalsIgnoreCase(repo.getName()));
-                
+
                 logger.info("opt-soa already exists in repository list: {}", alreadyExists);
-                
+
                 if (!alreadyExists) {
                     Repository soaRepo = new Repository("opt-soa", normalizedPath);
-                    
+
                     // Try to detect version from the SOA directory with custom logic
                     try {
                         String version = detectSoaRepositoryVersion(soaDir.toPath());
@@ -606,7 +668,7 @@ public class MainController implements Initializable {
                     } catch (Exception e) {
                         logger.warn("Could not detect version for opt-soa: {}", e.getMessage());
                     }
-                    
+
                     repositories.add(soaRepo);
                     logger.info("Successfully added opt-soa repository from SOA Path: {}", normalizedPath);
                 } else {
@@ -624,19 +686,6 @@ public class MainController implements Initializable {
      * Detect version for opt-soa repository which may have a different structure
      */
     private String detectSoaRepositoryVersion(Path soaPath) {
-        logger.info("Detecting SOA repository version in: {}", soaPath);
-        
-        // Try standard version detection first
-        try {
-            String version = repositoryScanner.detectRepositoryVersion(soaPath);
-            if (version != null && !version.trim().isEmpty()) {
-                logger.info("Found SOA version using standard detection: {}", version);
-                return version;
-            }
-        } catch (Exception e) {
-            logger.debug("Standard version detection failed for SOA: {}", e.getMessage());
-        }
-        
         // Try looking in subdirectories for version files
         try {
             java.nio.file.DirectoryStream<java.nio.file.Path> stream = 
@@ -657,7 +706,7 @@ public class MainController implements Initializable {
         } catch (Exception e) {
             logger.debug("Error scanning SOA subdirectories: {}", e.getMessage());
         }
-        
+
         // Try looking for specific SOA version patterns in files
         try {
             // Look for version.properties, version.txt, or similar files
@@ -683,6 +732,24 @@ public class MainController implements Initializable {
         
         logger.info("Could not detect version for opt-soa repository");
         return "";
+    }
+    
+    @FXML
+    private void handleRefresh() {
+        // Get the current repository path
+        String currentPath = basePathField.getText();
+        if (currentPath != null && !currentPath.trim().isEmpty()) {
+            File dir = new File(currentPath.trim());
+            if (dir.exists() && dir.isDirectory()) {
+                // Trigger a rescan of repositories
+                scanRepositories(Path.of(currentPath.trim()));
+                logger.info("Repositories refreshed from path: {}", currentPath);
+            } else {
+                showAlert("Invalid Path", "Repository path does not exist: " + currentPath);
+            }
+        } else {
+            showAlert("No Path", "Please specify a repository path to refresh.");
+        }
     }
 
     @FXML
@@ -1166,29 +1233,32 @@ public class MainController implements Initializable {
      * Check if a repository has version mismatch between deployment, repo, and targeted versions
      */
     private boolean hasVersionMismatch(Repository repository) {
+        if (repository.isIgnore()) {
+            return false;
+        }
         String deploymentVersion = repository.getDeploymentVersion();
         String repoVersion = repository.getRepoVersion();
         String targetedVersion = repository.getTargetedVersion();
-        
-        // No mismatch if deployment version is empty (not deployed)
+
+        // If deployment version is empty and repo version is present, it's a mismatch
         if (deploymentVersion == null || deploymentVersion.trim().isEmpty()) {
-            return false;
+            return repoVersion != null && !repoVersion.trim().isEmpty();
         }
-        
+
         // Check against repo version if it exists
         if (repoVersion != null && !repoVersion.trim().isEmpty()) {
             if (!deploymentVersion.equals(repoVersion)) {
                 return true;
             }
         }
-        
+
         // Check against targeted version if it exists
         if (targetedVersion != null && !targetedVersion.trim().isEmpty()) {
             if (!deploymentVersion.equals(targetedVersion)) {
                 return true;
             }
         }
-        
+
         return false;
     }
 
