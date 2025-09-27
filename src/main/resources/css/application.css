@@ -208,3 +208,31 @@
   -fx-padding: 5 8 5 8;
   -fx-text-fill: #333333;
 }
+
+/* Version mismatch row styling */
+.version-mismatch {
+  -fx-background-color: #ffe6e6 !important;
+  -fx-border-color: #ffcccc !important;
+  -fx-border-width: 1px !important;
+}
+
+.version-mismatch:hover {
+  -fx-background-color: #ffdddd !important;
+}
+
+.version-mismatch .table-cell {
+  -fx-text-fill: #cc0000 !important;
+}
+
+.version-mismatch:hover .table-cell {
+  -fx-text-fill: #cc0000 !important;
+}
+
+/* Override selected styling when version mismatch is also present */
+.version-mismatch.repository-selected {
+  -fx-background-color: #ffb3b3 !important;
+}
+
+.version-mismatch.repository-selected .table-cell {
+  -fx-text-fill: #990000 !important;
+}

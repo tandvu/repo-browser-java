@@ -61,7 +61,6 @@ public class MainController implements Initializable {
     @FXML private TableColumn<Repository, String> repoVersionColumn;
     @FXML private TableColumn<Repository, String> targetedVersionColumn;
     @FXML private TableColumn<Repository, String> deploymentVersionColumn;
-    @FXML private TableColumn<Repository, String> pathColumn;
     @FXML private Label statusLabel;
     @FXML private ProgressBar progressBar;
     
@@ -149,17 +148,12 @@ public class MainController implements Initializable {
         // Targeted version column
         targetedVersionColumn.setCellValueFactory(new PropertyValueFactory<>("targetedVersion"));
         
-    // Deployment version column
-    deploymentVersionColumn.setCellValueFactory(new PropertyValueFactory<>("deploymentVersion"));
+        // Deployment version column
+        deploymentVersionColumn.setCellValueFactory(new PropertyValueFactory<>("deploymentVersion"));
 
-        // Repository path column  
-        pathColumn.setCellValueFactory(new PropertyValueFactory<>("path"));
-        
         // Make table editable for checkboxes
         repoTable.setEditable(true);
-        repoTable.setItems(filteredRepositories);
-        
-        // Setup row factory for click-to-select functionality
+        repoTable.setItems(filteredRepositories);        // Setup row factory for click-to-select functionality
         setupRowFactory();
     }
     
@@ -174,14 +168,30 @@ public class MainController implements Initializable {
                     super.updateItem(repository, empty);
                     
                     if (empty || repository == null) {
-                        getStyleClass().remove("repository-selected");
+                        getStyleClass().removeAll("repository-selected", "version-mismatch");
                     } else {
                         // Update row styling based on selection state
                         updateRowStyle(repository);
                         
+                        // Check for version mismatch and apply styling
+                        updateVersionMismatchStyle(repository);
+                        
                         // Listen for changes to the repository's selected property for visual updates
                         repository.selectedProperty().addListener((obs, wasSelected, isSelected) -> {
                             updateRowStyle(repository);
+                        });
+                        
+                        // Listen for version changes to update mismatch styling
+                        repository.repoVersionProperty().addListener((obs, oldVersion, newVersion) -> {
+                            updateVersionMismatchStyle(repository);
+                        });
+                        
+                        repository.targetedVersionProperty().addListener((obs, oldVersion, newVersion) -> {
+                            updateVersionMismatchStyle(repository);
+                        });
+                        
+                        repository.deploymentVersionProperty().addListener((obs, oldVersion, newVersion) -> {
+                            updateVersionMismatchStyle(repository);
                         });
                     }
                 }
@@ -193,6 +203,17 @@ public class MainController implements Initializable {
                         }
                     } else {
                         getStyleClass().remove("repository-selected");
+                    }
+                }
+                
+                private void updateVersionMismatchStyle(Repository repository) {
+                    boolean hasMismatch = hasVersionMismatch(repository);
+                    if (hasMismatch) {
+                        if (!getStyleClass().contains("version-mismatch")) {
+                            getStyleClass().add("version-mismatch");
+                        }
+                    } else {
+                        getStyleClass().remove("version-mismatch");
                     }
                 }
             };
@@ -486,6 +507,36 @@ public class MainController implements Initializable {
         } finally {
             progressBar.setVisible(false);
         }
+    }
+
+    /**
+     * Check if a repository has version mismatch between deployment, repo, and targeted versions
+     */
+    private boolean hasVersionMismatch(Repository repository) {
+        String deploymentVersion = repository.getDeploymentVersion();
+        String repoVersion = repository.getRepoVersion();
+        String targetedVersion = repository.getTargetedVersion();
+        
+        // No mismatch if deployment version is empty (not deployed)
+        if (deploymentVersion == null || deploymentVersion.trim().isEmpty()) {
+            return false;
+        }
+        
+        // Check against repo version if it exists
+        if (repoVersion != null && !repoVersion.trim().isEmpty()) {
+            if (!deploymentVersion.equals(repoVersion)) {
+                return true;
+            }
+        }
+        
+        // Check against targeted version if it exists
+        if (targetedVersion != null && !targetedVersion.trim().isEmpty()) {
+            if (!deploymentVersion.equals(targetedVersion)) {
+                return true;
+            }
+        }
+        
+        return false;
     }
 
     /**
