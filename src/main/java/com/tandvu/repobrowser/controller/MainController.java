@@ -2,16 +2,21 @@ package com.tandvu.repobrowser.controller;
 
 import com.tandvu.repobrowser.model.Repository;
 import com.tandvu.repobrowser.service.RepositoryScanner;
+import javafx.application.Platform;
+import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.collections.FXCollections;
 import javafx.collections.ListChangeListener;
 import javafx.collections.ObservableList;
+import javafx.concurrent.Task;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
+import javafx.geometry.Pos;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.CheckBoxTableCell;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
+import javafx.scene.layout.VBox;
 import javafx.scene.media.Media;
 import javafx.scene.media.MediaPlayer;
 import javafx.scene.media.MediaView;
@@ -21,16 +26,25 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.awt.Desktop;
 import java.net.URI;
 import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.DirectoryStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
 import java.util.prefs.Preferences;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -60,7 +74,18 @@ public class MainController implements Initializable {
     @FXML private TableColumn<Repository, String> nameColumn;
     @FXML private TableColumn<Repository, String> repoVersionColumn;
     @FXML private TableColumn<Repository, String> targetedVersionColumn;
-    @FXML private TableColumn<Repository, String> deploymentVersionColumn;
+        @FXML
+    private TableColumn<Repository, String> deploymentVersionColumn;
+    @FXML
+    private Button buildMasterButton;
+    @FXML
+    private VBox buildLogContainer;
+    @FXML
+    private TextArea buildLogArea;
+    @FXML
+    private Label buildStatusLabel;
+    @FXML
+    private Button backToTableButton;
     @FXML private Label statusLabel;
     @FXML private ProgressBar progressBar;
     
@@ -175,29 +200,11 @@ public class MainController implements Initializable {
                         
                         // Check for version mismatch and apply styling
                         updateVersionMismatchStyle(repository);
-                        
-                        // Listen for changes to the repository's selected property for visual updates
-                        repository.selectedProperty().addListener((obs, wasSelected, isSelected) -> {
-                            updateRowStyle(repository);
-                        });
-                        
-                        // Listen for version changes to update mismatch styling
-                        repository.repoVersionProperty().addListener((obs, oldVersion, newVersion) -> {
-                            updateVersionMismatchStyle(repository);
-                        });
-                        
-                        repository.targetedVersionProperty().addListener((obs, oldVersion, newVersion) -> {
-                            updateVersionMismatchStyle(repository);
-                        });
-                        
-                        repository.deploymentVersionProperty().addListener((obs, oldVersion, newVersion) -> {
-                            updateVersionMismatchStyle(repository);
-                        });
                     }
                 }
                 
                 private void updateRowStyle(Repository repository) {
-                    if (repository.isSelected()) {
+                    if (repository != null && repository.isSelected()) {
                         if (!getStyleClass().contains("repository-selected")) {
                             getStyleClass().add("repository-selected");
                         }
@@ -207,13 +214,15 @@ public class MainController implements Initializable {
                 }
                 
                 private void updateVersionMismatchStyle(Repository repository) {
-                    boolean hasMismatch = hasVersionMismatch(repository);
-                    if (hasMismatch) {
-                        if (!getStyleClass().contains("version-mismatch")) {
-                            getStyleClass().add("version-mismatch");
+                    if (repository != null) {
+                        boolean hasMismatch = hasVersionMismatch(repository);
+                        if (hasMismatch) {
+                            if (!getStyleClass().contains("version-mismatch")) {
+                                getStyleClass().add("version-mismatch");
+                            }
+                        } else {
+                            getStyleClass().remove("version-mismatch");
                         }
-                    } else {
-                        getStyleClass().remove("version-mismatch");
                     }
                 }
             };
@@ -229,6 +238,9 @@ public class MainController implements Initializable {
                         logger.info("Repository '{}' {} via row click", 
                             repository.getName(), 
                             newSelection ? "selected" : "deselected");
+                        
+                        // Refresh the table to update all row styles
+                        repoTable.refresh();
                         
                         // Note: updateStatusLabel() and updateHeaderCheckboxState() 
                         // will be called automatically by the listener in scanRepositories
@@ -491,6 +503,8 @@ public class MainController implements Initializable {
                 repo.selectedProperty().addListener((observable, oldValue, newValue) -> {
                     updateHeaderCheckboxState();
                     updateStatusLabel();
+                    // Refresh the table to update row styles
+                    Platform.runLater(() -> repoTable.refresh());
                 });
             });
             
@@ -626,6 +640,464 @@ public class MainController implements Initializable {
         
         logger.info("Could not detect version for opt-soa repository");
         return "";
+    }
+
+    @FXML
+    private void handleBuildMaster() {
+        // Get selected repositories
+        List<Repository> selectedRepos = repositories.stream()
+            .filter(Repository::isSelected)
+            .collect(Collectors.toList());
+
+        if (selectedRepos.isEmpty()) {
+            showAlert("No Selection", "Please select at least one repository to build.");
+            return;
+        }
+
+        if (selectedRepos.size() > 1) {
+            showAlert("Multiple Selection", "Please select only one repository to build.");
+            return;
+        }
+
+        Repository selectedRepo = selectedRepos.get(0);
+        startBuildProcess(selectedRepo);
+    }
+
+    @FXML
+    private void handleBackToTable() {
+        // Show table, hide build log
+        repoTable.setVisible(true);
+        buildLogContainer.setVisible(false);
+        buildMasterButton.setDisable(false);
+    }
+
+    private void startBuildProcess(Repository repository) {
+        // Hide table, show build log
+        repoTable.setVisible(false);
+        buildLogContainer.setVisible(true);
+        buildMasterButton.setDisable(true);
+        
+        // Clear previous log and ensure it's ready
+        Platform.runLater(() -> {
+            if (buildLogArea != null) {
+                buildLogArea.clear();
+                buildLogArea.setText(""); // Explicitly set to empty string
+            }
+            buildStatusLabel.setText("Building " + repository.getName() + "...");
+        });
+        
+        // Small delay to ensure UI is updated
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        // Get repository path
+        String basePath = basePathField.getText().trim();
+        if (basePath.isEmpty()) {
+            appendToBuildLog("ERROR: No repository path configured\n");
+            buildStatusLabel.setText("Build Failed");
+            buildMasterButton.setDisable(false);
+            return;
+        }
+        
+        Path repoPath = Paths.get(basePath, repository.getName());
+        if (!Files.exists(repoPath)) {
+            appendToBuildLog("ERROR: Repository path does not exist: " + repoPath + "\n");
+            buildStatusLabel.setText("Build Failed");
+            buildMasterButton.setDisable(false);
+            return;
+        }
+        
+        // Start build process in background thread
+        Task<Void> buildTask = new Task<Void>() {
+            @Override
+            protected Void call() throws Exception {
+                try {
+                    final Repository finalRepository = repository;
+                    final Path finalRepoPath = repoPath;
+                    
+                    // Step 1: Check if it's a git repository
+                    appendToBuildLog("=== Checking Git Repository ===\n");
+                    if (!Files.exists(finalRepoPath.resolve(".git"))) {
+                        appendToBuildLog("ERROR: Not a git repository: " + finalRepoPath + "\n");
+                        Platform.runLater(() -> {
+                            buildStatusLabel.setText("Build Failed");
+                            buildMasterButton.setDisable(false);
+                        });
+                        return null;
+                    }
+                    
+                    // Step 2: Checkout master branch
+                    appendToBuildLog("=== Checking out master branch ===\n");
+                    ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", "master");
+                    gitCheckout.directory(finalRepoPath.toFile());
+                    gitCheckout.redirectErrorStream(true);
+                    
+                    Process gitProcess = gitCheckout.start();
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(gitProcess.getInputStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            final String logLine = line != null ? line : "";
+                            Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                        }
+                    }
+                    
+                    int gitExitCode = gitProcess.waitFor();
+                    if (gitExitCode != 0) {
+                        Platform.runLater(() -> {
+                            appendToBuildLog("ERROR: Git checkout failed with exit code: " + gitExitCode + "\n");
+                            buildStatusLabel.setText("Build Failed");
+                            buildMasterButton.setDisable(false);
+                        });
+                        return null;
+                    }
+                    
+                    // Step 3: Pull latest changes
+                    appendToBuildLog("=== Pulling latest changes ===\n");
+                    ProcessBuilder gitPull = new ProcessBuilder("git", "pull");
+                    gitPull.directory(finalRepoPath.toFile());
+                    gitPull.redirectErrorStream(true);
+                    
+                    Process pullProcess = gitPull.start();
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(pullProcess.getInputStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            final String logLine = line != null ? line : "";
+                            Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                        }
+                    }
+                    
+                    int pullExitCode = pullProcess.waitFor();
+                    if (pullExitCode != 0) {
+                        Platform.runLater(() -> {
+                            appendToBuildLog("WARNING: Git pull failed with exit code: " + pullExitCode + "\n");
+                            appendToBuildLog("Continuing with build...\n");
+                        });
+                    }
+                    
+                    // Step 4: Check for package.json
+                    appendToBuildLog("=== Checking for package.json ===\n");
+                    if (!Files.exists(repoPath.resolve("package.json"))) {
+                        Platform.runLater(() -> {
+                            appendToBuildLog("ERROR: package.json not found in repository\n");
+                            buildStatusLabel.setText("Build Failed");
+                            buildMasterButton.setDisable(false);
+                        });
+                        return null;
+                    }
+                    
+                    // Step 5: Run npm run build
+                    appendToBuildLog("=== Running npm run build ===\n");
+                    
+                    // Create npm command for Windows compatibility
+                    ProcessBuilder npmBuild;
+                    String os = System.getProperty("os.name").toLowerCase();
+                    if (os.contains("win")) {
+                        // On Windows, use cmd to run npm
+                        npmBuild = new ProcessBuilder("cmd", "/c", "npm", "run", "build");
+                    } else {
+                        // On Unix-like systems
+                        npmBuild = new ProcessBuilder("npm", "run", "build");
+                    }
+                    
+                    npmBuild.directory(finalRepoPath.toFile());
+                    npmBuild.redirectErrorStream(true);
+                    
+                    // Log the command being executed
+                    String commandStr = String.join(" ", npmBuild.command());
+                    appendToBuildLog("Executing: " + commandStr + "\n");
+                    appendToBuildLog("Working directory: " + repoPath.toString() + "\n\n");
+                    
+                    Process npmProcess;
+                    try {
+                        npmProcess = npmBuild.start();
+                    } catch (IOException e) {
+                        Platform.runLater(() -> {
+                            appendToBuildLog("ERROR: Failed to start npm process: " + e.getMessage() + "\n");
+                            appendToBuildLog("This might indicate that npm is not installed or not in PATH.\n");
+                            appendToBuildLog("Please ensure Node.js and npm are properly installed.\n");
+                            buildStatusLabel.setText("Build Failed - npm not found");
+                            buildMasterButton.setDisable(false);
+                        });
+                        return null;
+                    }
+                    
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(npmProcess.getInputStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            final String logLine = line != null ? line : "";
+                            Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                        }
+                    }
+                    
+                    int npmExitCode = npmProcess.waitFor();
+                    Platform.runLater(() -> {
+                        if (npmExitCode == 0) {
+                            appendToBuildLog("\n=== Build Completed Successfully ===\n");
+                            buildStatusLabel.setText("Build Successful - Deploying...");
+                            
+                            // Start deployment in background
+                            Task<Void> deployTask = createDeploymentTask(finalRepository, finalRepoPath);
+                            Thread deployThread = new Thread(deployTask);
+                            deployThread.setDaemon(true);
+                            deployThread.start();
+                        } else {
+                            appendToBuildLog("\nERROR: npm run build failed with exit code: " + npmExitCode + "\n");
+                            buildStatusLabel.setText("Build Failed");
+                            buildMasterButton.setDisable(false);
+                        }
+                    });
+                    
+                } catch (Exception e) {
+                    Platform.runLater(() -> {
+                        appendToBuildLog("ERROR: " + e.getMessage() + "\n");
+                        buildStatusLabel.setText("Build Failed");
+                        buildMasterButton.setDisable(false);
+                    });
+                    logger.error("Build process failed", e);
+                }
+                
+                return null;
+            }
+        };
+        
+        // Run build task in background
+        Thread buildThread = new Thread(buildTask);
+        buildThread.setDaemon(true);
+        buildThread.start();
+    }
+    
+    /**
+     * Create deployment task to copy WAR file to deployment directory
+     */
+    private Task<Void> createDeploymentTask(Repository repository, Path repoPath) {
+        return new Task<Void>() {
+            @Override
+            protected Void call() throws Exception {
+                try {
+                    Platform.runLater(() -> appendToBuildLog("\n=== Starting Deployment ===\n"));
+                    
+                    // Get deployment path
+                    String deploymentPath = deploymentPathField.getText();
+                    if (deploymentPath == null || deploymentPath.trim().isEmpty()) {
+                        Platform.runLater(() -> {
+                            appendToBuildLog("ERROR: No deployment path specified\n");
+                            buildStatusLabel.setText("Deployment Failed - No path");
+                            buildMasterButton.setDisable(false);
+                        });
+                        return null;
+                    }
+                    
+                    Path deploymentDir = Path.of(deploymentPath.trim());
+                    if (!Files.exists(deploymentDir) || !Files.isDirectory(deploymentDir)) {
+                        Platform.runLater(() -> {
+                            appendToBuildLog("ERROR: Deployment directory does not exist: " + deploymentPath + "\n");
+                            buildStatusLabel.setText("Deployment Failed - Invalid path");
+                            buildMasterButton.setDisable(false);
+                        });
+                        return null;
+                    }
+                    
+                    // Look for WAR files in the build output directory
+                    Path targetDir = repoPath.resolve("target");
+                    if (!Files.exists(targetDir)) {
+                        // Try dist directory for some projects
+                        targetDir = repoPath.resolve("dist");
+                    }
+                    if (!Files.exists(targetDir)) {
+                        // Try build directory
+                        targetDir = repoPath.resolve("build");
+                    }
+                    
+                    final Path finalTargetDir = targetDir;
+                    
+                    if (!Files.exists(finalTargetDir)) {
+                        Platform.runLater(() -> {
+                            appendToBuildLog("ERROR: No target/dist/build directory found in repository\n");
+                            buildStatusLabel.setText("Deployment Failed - No build output");
+                            buildMasterButton.setDisable(false);
+                        });
+                        return null;
+                    }
+                    
+                    Platform.runLater(() -> appendToBuildLog("Looking for WAR files in: " + finalTargetDir + "\n"));
+                    
+                    // Find WAR files
+                    List<Path> warFiles = new ArrayList<>();
+                    try (DirectoryStream<Path> stream = Files.newDirectoryStream(finalTargetDir, "*.war")) {
+                        for (Path warFile : stream) {
+                            warFiles.add(warFile);
+                        }
+                    }
+                    
+                    if (warFiles.isEmpty()) {
+                        Platform.runLater(() -> {
+                            appendToBuildLog("ERROR: No WAR files found in build output directory\n");
+                            buildStatusLabel.setText("Deployment Failed - No WAR files");
+                            buildMasterButton.setDisable(false);
+                        });
+                        return null;
+                    }
+                    
+                    // Deploy each WAR file
+                    for (Path warFile : warFiles) {
+                        String warFileName = warFile.getFileName().toString();
+                        
+                        // Extract version from new WAR file name
+                        String newVersion = extractVersionFromWarFile(warFileName);
+                        String displayVersion = newVersion.isEmpty() ? "unknown" : newVersion;
+                        
+                        Platform.runLater(() -> appendToBuildLog("Preparing to deploy: " + warFileName + " (version: " + displayVersion + ")\n"));
+                        
+                        // Find and delete existing WAR files for this repository
+                        String repoName = repository.getName();
+                        deleteExistingWarFiles(deploymentDir, repoName, warFileName);
+                        
+                        // Deploy the new WAR file
+                        Path deploymentTarget = deploymentDir.resolve(warFileName);
+                        Platform.runLater(() -> appendToBuildLog("Deploying new WAR: " + warFileName + "\n"));
+                        
+                        Files.copy(warFile, deploymentTarget, StandardCopyOption.REPLACE_EXISTING);
+                        
+                        Platform.runLater(() -> appendToBuildLog("Successfully deployed: " + warFileName + " (version: " + displayVersion + ") -> " + deploymentTarget + "\n"));
+                    }
+                    
+                    Platform.runLater(() -> {
+                        appendToBuildLog("\n=== Deployment Completed Successfully ===\n");
+                        appendToBuildLog("Deployed " + warFiles.size() + " WAR file(s) to: " + deploymentPath + "\n");
+                        buildStatusLabel.setText("Build & Deployment Successful");
+                        buildMasterButton.setDisable(false);
+                    });
+                    
+                } catch (Exception e) {
+                    Platform.runLater(() -> {
+                        appendToBuildLog("ERROR: Deployment failed - " + e.getMessage() + "\n");
+                        buildStatusLabel.setText("Deployment Failed");
+                        buildMasterButton.setDisable(false);
+                    });
+                    logger.error("Deployment failed", e);
+                }
+                
+                return null;
+            }
+        };
+    }
+    
+    /**
+     * Delete existing WAR files for the repository in the deployment directory
+     */
+    private void deleteExistingWarFiles(Path deploymentDir, String repoName, String newWarFileName) {
+        try {
+            // Create patterns to match WAR files for this repository
+            List<String> patterns = createWarFilePatterns(repoName);
+            
+            Platform.runLater(() -> appendToBuildLog("Checking for existing WAR files for repository: " + repoName + "\n"));
+            
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(deploymentDir, "*.war")) {
+                for (Path existingWar : stream) {
+                    String existingWarName = existingWar.getFileName().toString();
+                    
+                    // Don't delete the same file we're about to deploy
+                    if (existingWarName.equals(newWarFileName)) {
+                        continue;
+                    }
+                    
+                    // Check if this WAR file belongs to the same repository
+                    if (isWarFileForRepository(existingWarName, patterns)) {
+                        String oldVersion = extractVersionFromWarFile(existingWarName);
+                        String displayOldVersion = oldVersion.isEmpty() ? "unknown" : oldVersion;
+                        
+                        Platform.runLater(() -> appendToBuildLog("Found existing WAR file: " + existingWarName + " (version: " + displayOldVersion + ")\n"));
+                        Platform.runLater(() -> appendToBuildLog("Deleting old WAR file: " + existingWarName + "\n"));
+                        
+                        Files.delete(existingWar);
+                        
+                        Platform.runLater(() -> appendToBuildLog("Successfully deleted: " + existingWarName + "\n"));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Platform.runLater(() -> appendToBuildLog("Warning: Failed to clean up existing WAR files: " + e.getMessage() + "\n"));
+            logger.warn("Failed to clean up existing WAR files for repository: " + repoName, e);
+        }
+    }
+    
+    /**
+     * Create patterns to match WAR files for a repository
+     */
+    private List<String> createWarFilePatterns(String repoName) {
+        List<String> patterns = new ArrayList<>();
+        
+        // Standard AMPT pattern: ampt-<repo>-<version>.war
+        if (repoName.startsWith("opt-")) {
+            String amptName = repoName.substring(4); // Remove "opt-" prefix
+            patterns.add("ampt-" + amptName + "-");
+        }
+        
+        // SOA pattern: opt-soa-<version>.war
+        if ("opt-soa".equals(repoName)) {
+            patterns.add("opt-soa-");
+        }
+        
+        // Direct pattern: <repo>-<version>.war
+        patterns.add(repoName + "-");
+        
+        return patterns;
+    }
+    
+    /**
+     * Check if a WAR file belongs to the given repository
+     */
+    private boolean isWarFileForRepository(String warFileName, List<String> patterns) {
+        for (String pattern : patterns) {
+            if (warFileName.startsWith(pattern) && warFileName.endsWith(".war")) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Extract version from WAR file name
+     */
+    private String extractVersionFromWarFile(String warFileName) {
+        // Remove .war extension
+        String baseName = warFileName.replace(".war", "");
+        
+        // Try to extract version using regex patterns
+        // Pattern 1: ampt-<name>-<version> or opt-soa-<version> or <name>-<version>
+        Pattern versionPattern = Pattern.compile(".*-(\\d+(?:\\.\\d+)*(?:-[a-zA-Z0-9]+)?)$");
+        Matcher matcher = versionPattern.matcher(baseName);
+        
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        
+        return "";
+    }
+    
+    private void appendToBuildLog(String text) {
+        if (text == null) {
+            text = "";
+        }
+        
+        // Ensure we're on the JavaFX Application Thread
+        final String safeText = text;
+        if (Platform.isFxApplicationThread()) {
+            try {
+                if (buildLogArea != null) {
+                    buildLogArea.appendText(safeText);
+                    // Auto-scroll to bottom
+                    buildLogArea.setScrollTop(Double.MAX_VALUE);
+                }
+            } catch (Exception e) {
+                logger.warn("Error appending to build log: {}", e.getMessage());
+            }
+        } else {
+            Platform.runLater(() -> appendToBuildLog(safeText));
+        }
     }
 
     /**

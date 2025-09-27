@@ -70,19 +70,57 @@
    </top>
    
    <center>
-      <!-- Repository Table -->
-      <TableView fx:id="repoTable" tableMenuButtonVisible="true">
-         <columns>
-            <TableColumn fx:id="selectedColumn" text="Selected" prefWidth="80.0" resizable="false" />
-            <TableColumn fx:id="nameColumn" text="Repository Name" prefWidth="200.0" />
-            <TableColumn fx:id="repoVersionColumn" text="Repo Version" prefWidth="100.0" />
-            <TableColumn fx:id="targetedVersionColumn" text="Targeted Version" prefWidth="120.0" />
-            <TableColumn fx:id="deploymentVersionColumn" text="Deployment Version" prefWidth="140.0" />
-         </columns>
-         <columnResizePolicy>
-            <TableView fx:constant="CONSTRAINED_RESIZE_POLICY" />
-         </columnResizePolicy>
-      </TableView>
+      <!-- Main content area with Build Master button above table -->
+      <VBox spacing="10.0">
+         <children>
+            <!-- Build Master Button positioned right above table -->
+            <HBox alignment="CENTER_LEFT" spacing="8.0">
+               <padding>
+                  <Insets left="10.0" right="10.0" />
+               </padding>
+               <children>
+                  <Button fx:id="buildMasterButton" text="Build Master" onAction="#handleBuildMaster" prefWidth="120.0" />
+               </children>
+            </HBox>
+            
+            <!-- Main content area with StackPane to overlay table and build log -->
+            <StackPane VBox.vgrow="ALWAYS">
+               <children>
+                  <!-- Repository Table -->
+                  <TableView fx:id="repoTable" tableMenuButtonVisible="true">
+                     <columns>
+                        <TableColumn fx:id="selectedColumn" text="Selected" prefWidth="80.0" resizable="false" />
+                        <TableColumn fx:id="nameColumn" text="Repository Name" prefWidth="200.0" />
+                        <TableColumn fx:id="repoVersionColumn" text="Repo Version" prefWidth="100.0" />
+                        <TableColumn fx:id="targetedVersionColumn" text="Targeted Version" prefWidth="120.0" />
+                        <TableColumn fx:id="deploymentVersionColumn" text="Deployment Version" prefWidth="140.0" />
+                     </columns>
+                     <columnResizePolicy>
+                        <TableView fx:constant="CONSTRAINED_RESIZE_POLICY" />
+                     </columnResizePolicy>
+                  </TableView>
+
+                  <!-- Build Log (Initially Hidden) -->
+                  <VBox fx:id="buildLogContainer" visible="false" spacing="10.0">
+                     <padding>
+                        <Insets bottom="10.0" left="10.0" right="10.0" top="10.0" />
+                     </padding>
+                     <children>
+                        <HBox alignment="CENTER_LEFT" spacing="10.0">
+                           <children>
+                              <Label fx:id="buildStatusLabel" text="Building..." style="-fx-font-weight: bold;" />
+                              <Region HBox.hgrow="ALWAYS" />
+                              <Button fx:id="backToTableButton" text="Back to Table" onAction="#handleBackToTable" />
+                           </children>
+                        </HBox>
+                        <TextArea fx:id="buildLogArea" editable="false" wrapText="true" VBox.vgrow="ALWAYS" 
+                                  style="-fx-font-family: 'Courier New', monospace; -fx-font-size: 12px;" />
+                     </children>
+                  </VBox>
+               </children>
+            </StackPane>
+         </children>
+      </VBox>
    </center>
    
    <bottom>
