@@ -477,17 +477,24 @@ public class MainController implements Initializable {
         try {
             List<Repository> foundRepos = repositoryScanner.scanForRepositories(basePath);
             repositories.addAll(foundRepos);
-            filteredRepositories.addAll(foundRepos);
+            
+            // Add opt-soa repository from SOA Path if it exists
+            addSoaRepository();
+            
+            // Sort all repositories (including opt-soa) alphabetically by name
+            repositories.sort((r1, r2) -> r1.getName().compareToIgnoreCase(r2.getName()));
+            
+            filteredRepositories.addAll(repositories);
             
             // Add listeners to each repository to update header checkbox
-            foundRepos.forEach(repo -> {
+            repositories.forEach(repo -> {
                 repo.selectedProperty().addListener((observable, oldValue, newValue) -> {
                     updateHeaderCheckboxState();
                     updateStatusLabel();
                 });
             });
             
-            logger.info("Found {} repositories", foundRepos.size());
+            logger.info("Found {} repositories", repositories.size());
             updateStatusLabel();
             updateHeaderCheckboxState();
             
@@ -507,6 +514,118 @@ public class MainController implements Initializable {
         } finally {
             progressBar.setVisible(false);
         }
+    }
+
+    /**
+     * Add opt-soa repository from the SOA Path if the directory exists
+     */
+    private void addSoaRepository() {
+        String soaPath = soaPathLabel.getText();
+        logger.info("Attempting to add opt-soa from SOA Path: '{}'", soaPath);
+        
+        if (soaPath != null && !soaPath.trim().isEmpty()) {
+            // Normalize path separators for Windows
+            String normalizedPath = soaPath.trim().replace('/', File.separatorChar).replace('\\', File.separatorChar);
+            File soaDir = new File(normalizedPath);
+            
+            logger.info("Checking if SOA directory exists: '{}' -> exists: {}, isDirectory: {}", 
+                normalizedPath, soaDir.exists(), soaDir.isDirectory());
+            
+            if (soaDir.exists() && soaDir.isDirectory()) {
+                // Check if opt-soa already exists in the list (avoid duplicates)
+                boolean alreadyExists = repositories.stream()
+                    .anyMatch(repo -> "opt-soa".equalsIgnoreCase(repo.getName()));
+                
+                logger.info("opt-soa already exists in repository list: {}", alreadyExists);
+                
+                if (!alreadyExists) {
+                    Repository soaRepo = new Repository("opt-soa", normalizedPath);
+                    
+                    // Try to detect version from the SOA directory with custom logic
+                    try {
+                        String version = detectSoaRepositoryVersion(soaDir.toPath());
+                        logger.info("Detected version for opt-soa: '{}'", version);
+                        soaRepo.setRepoVersion(version);
+                    } catch (Exception e) {
+                        logger.warn("Could not detect version for opt-soa: {}", e.getMessage());
+                    }
+                    
+                    repositories.add(soaRepo);
+                    logger.info("Successfully added opt-soa repository from SOA Path: {}", normalizedPath);
+                } else {
+                    logger.info("opt-soa repository already exists, skipping SOA Path addition");
+                }
+            } else {
+                logger.warn("SOA Path does not exist or is not a directory: {} (normalized: {})", soaPath, normalizedPath);
+            }
+        } else {
+            logger.warn("SOA Path is null or empty: '{}'", soaPath);
+        }
+    }
+
+    /**
+     * Detect version for opt-soa repository which may have a different structure
+     */
+    private String detectSoaRepositoryVersion(Path soaPath) {
+        logger.info("Detecting SOA repository version in: {}", soaPath);
+        
+        // Try standard version detection first
+        try {
+            String version = repositoryScanner.detectRepositoryVersion(soaPath);
+            if (version != null && !version.trim().isEmpty()) {
+                logger.info("Found SOA version using standard detection: {}", version);
+                return version;
+            }
+        } catch (Exception e) {
+            logger.debug("Standard version detection failed for SOA: {}", e.getMessage());
+        }
+        
+        // Try looking in subdirectories for version files
+        try {
+            java.nio.file.DirectoryStream<java.nio.file.Path> stream = 
+                java.nio.file.Files.newDirectoryStream(soaPath, java.nio.file.Files::isDirectory);
+            for (java.nio.file.Path subDir : stream) {
+                logger.debug("Checking SOA subdirectory: {}", subDir.getFileName());
+                try {
+                    String version = repositoryScanner.detectRepositoryVersion(subDir);
+                    if (version != null && !version.trim().isEmpty()) {
+                        logger.info("Found SOA version in subdirectory {}: {}", subDir.getFileName(), version);
+                        return version;
+                    }
+                } catch (Exception e) {
+                    logger.debug("Version detection failed in subdirectory {}: {}", subDir.getFileName(), e.getMessage());
+                }
+            }
+            stream.close();
+        } catch (Exception e) {
+            logger.debug("Error scanning SOA subdirectories: {}", e.getMessage());
+        }
+        
+        // Try looking for specific SOA version patterns in files
+        try {
+            // Look for version.properties, version.txt, or similar files
+            String[] versionFiles = {"version.properties", "version.txt", "VERSION", ".version"};
+            for (String fileName : versionFiles) {
+                java.nio.file.Path versionFile = soaPath.resolve(fileName);
+                if (java.nio.file.Files.exists(versionFile)) {
+                    String content = java.nio.file.Files.readString(versionFile);
+                    // Look for version patterns
+                    java.util.regex.Matcher matcher = java.util.regex.Pattern
+                        .compile("(?i)(?:version[=:\\s]+)([0-9]+(?:\\.[0-9]+)*(?:-[a-z0-9]+)?)")
+                        .matcher(content);
+                    if (matcher.find()) {
+                        String version = matcher.group(1);
+                        logger.info("Found SOA version in {}: {}", fileName, version);
+                        return version;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Error reading SOA version files: {}", e.getMessage());
+        }
+        
+        logger.info("Could not detect version for opt-soa repository");
+        return "";
     }
 
     /**
@@ -553,17 +672,33 @@ public class MainController implements Initializable {
             Map<String, String> deployedVersions = new HashMap<>();
             File[] warFiles = depDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".war"));
             if (warFiles != null) {
+                logger.info("Found {} WAR files in deployment directory", warFiles.length);
                 for (File war : warFiles) {
                     String name = war.getName().toLowerCase();
-                    // Match ampt-<suffix>-<version>.war
-                    // capture suffix and version; allow dots and hyphens in version
-                    java.util.regex.Matcher m = java.util.regex.Pattern
+                    logger.debug("Processing WAR file: {}", name);
+                    
+                    // Handle opt-soa pattern: opt-soa-<version>.war
+                    java.util.regex.Matcher soaMatcher = java.util.regex.Pattern
+                        .compile("^opt-soa-([0-9][a-z0-9.-]*)\\.war$")
+                        .matcher(name);
+                    if (soaMatcher.find()) {
+                        String version = soaMatcher.group(1);
+                        deployedVersions.put("soa", version); // map to "soa" suffix for opt-soa
+                        logger.info("Detected SOA deployment: opt-soa -> version {}", version);
+                        continue;
+                    }
+                    
+                    // Handle regular ampt pattern: ampt-<suffix>-<version>.war
+                    java.util.regex.Matcher amptMatcher = java.util.regex.Pattern
                         .compile("^ampt-([a-z0-9-]+)-([0-9][a-z0-9.-]*)\\.war$")
                         .matcher(name);
-                    if (m.find()) {
-                        String suffix = m.group(1);      // e.g., orgchart
-                        String version = m.group(2);     // e.g., 3.4.0 or 3.4.0-SNAPSHOT
+                    if (amptMatcher.find()) {
+                        String suffix = amptMatcher.group(1);      // e.g., orgchart
+                        String version = amptMatcher.group(2);     // e.g., 3.4.0 or 3.4.0-SNAPSHOT
                         deployedVersions.put(suffix, version);
+                        logger.info("Detected AMPT deployment: {} -> version {}", suffix, version);
+                    } else {
+                        logger.debug("WAR file does not match expected patterns: {}", name);
                     }
                 }
             }
@@ -573,7 +708,7 @@ public class MainController implements Initializable {
             
             if (!deployedVersions.isEmpty()) {
                 for (Repository repo : repositories) {
-                    String repoName = repo.getName().toLowerCase(); // e.g., opt-orgchart
+                    String repoName = repo.getName().toLowerCase(); // e.g., opt-orgchart, opt-soa
                     // map opt-<suffix> -> <suffix>
                     if (repoName.startsWith("opt-")) {
                         String suffix = repoName.substring(4);

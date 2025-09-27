@@ -108,7 +108,7 @@ public class RepositoryScanner {
      * @param repoPath The repository directory path
      * @return The detected version or empty string if not found
      */
-    private String detectRepositoryVersion(Path repoPath) {
+    public String detectRepositoryVersion(Path repoPath) {
         // Try package.json for Node.js projects
         Path packageJson = repoPath.resolve("package.json");
         if (Files.exists(packageJson)) {
