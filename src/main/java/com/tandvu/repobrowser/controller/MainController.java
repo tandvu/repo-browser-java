@@ -72,7 +72,7 @@ public class MainController implements Initializable {
     @FXML private TextArea filterField;
     @FXML private TableView<Repository> repoTable;
     @FXML private TableColumn<Repository, Boolean> selectedColumn;
-    @FXML private TableColumn<Repository, Boolean> ignoreColumn;
+    @FXML private TableColumn<Repository, Boolean> ignoredColumn;
     @FXML private TableColumn<Repository, String> nameColumn;
     @FXML private TableColumn<Repository, String> repoVersionColumn;
     @FXML private TableColumn<Repository, String> targetedVersionColumn;
@@ -217,9 +217,9 @@ public class MainController implements Initializable {
     selectedColumn.setEditable(true);
 
     // Ignore column with checkboxes
-    ignoreColumn.setCellValueFactory(new PropertyValueFactory<>("ignore"));
-    ignoreColumn.setCellFactory(CheckBoxTableCell.forTableColumn(ignoreColumn));
-    ignoreColumn.setEditable(true);
+    ignoredColumn.setCellValueFactory(new PropertyValueFactory<>("ignore"));
+    ignoredColumn.setCellFactory(CheckBoxTableCell.forTableColumn(ignoredColumn));
+    ignoredColumn.setEditable(true);
         
         // Add header checkbox for select all/clear all
         setupHeaderCheckbox();

@@ -91,7 +91,7 @@
                   <TableView fx:id="repoTable" tableMenuButtonVisible="true">
                      <columns>
                         <TableColumn fx:id="selectedColumn" text="Selected" prefWidth="80.0" resizable="false" />
-                        <TableColumn fx:id="ignoreColumn" text="Ignore" prefWidth="80.0" resizable="false" />
+                        <TableColumn fx:id="ignoredColumn" text="Ignored" prefWidth="80.0" resizable="false" />
                         <TableColumn fx:id="nameColumn" text="Repository Name" prefWidth="200.0" />
                         <TableColumn fx:id="repoVersionColumn" text="Repo Version" prefWidth="100.0" />
                         <TableColumn fx:id="targetedVersionColumn" text="Targeted Version" prefWidth="120.0" />
