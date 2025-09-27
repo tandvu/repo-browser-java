@@ -98,6 +98,9 @@ public class MainController implements Initializable {
     public void initialize(URL location, ResourceBundle resources) {
         logger.info("Initializing MainController");
         
+        // Initialize build log area first to prevent JavaFX text rendering issues
+        initializeBuildLogArea();
+        
         // Load saved paths from preferences
         loadSavedPaths();
         
@@ -119,7 +122,47 @@ public class MainController implements Initializable {
         
         logger.info("MainController initialized successfully");
     }
-    
+
+    /**
+     * Safely initialize the build log area to prevent JavaFX text rendering issues
+     */
+    private void initializeBuildLogArea() {
+        try {
+            if (buildLogArea != null) {
+                // Set basic properties
+                buildLogArea.setEditable(false);
+                buildLogArea.setWrapText(true);
+                buildLogArea.setStyle("-fx-font-family: 'Courier New', monospace; -fx-font-size: 12px;");
+                
+                // Clear the default text from FXML to start fresh
+                buildLogArea.setText("");
+                
+                // Force initial text layout by setting and clearing content
+                buildLogArea.setText("Initializing...");
+                Thread.sleep(50); // Small delay to let JavaFX process the text
+                buildLogArea.clear();
+                
+                // Hide the build log container initially
+                if (buildLogContainer != null) {
+                    buildLogContainer.setVisible(false);
+                }
+                
+                logger.debug("Build log area initialized successfully");
+            }
+        } catch (Exception e) {
+            logger.error("Error initializing build log area: " + e.getMessage(), e);
+            // If all else fails, try to set a simple TextArea with minimal formatting
+            if (buildLogArea != null) {
+                try {
+                    buildLogArea.setStyle("-fx-font-family: monospace;");
+                    buildLogArea.setText("");
+                } catch (Exception fallbackEx) {
+                    logger.error("Even fallback TextArea initialization failed: " + fallbackEx.getMessage());
+                }
+            }
+        }
+    }
+
     /**
      * Load saved paths from preferences
      */
@@ -1079,20 +1122,39 @@ public class MainController implements Initializable {
     }
     
     private void appendToBuildLog(String text) {
-        if (text == null) {
-            text = "";
+        if (text == null || text.trim().isEmpty()) {
+            return;
         }
         
         // Ensure we're on the JavaFX Application Thread
-        final String safeText = text;
+        final String safeText = text.replace("\r\n", "\n").replace("\r", "\n");
+        
         if (Platform.isFxApplicationThread()) {
             try {
                 if (buildLogArea != null) {
-                    buildLogArea.appendText(safeText);
-                    // Auto-scroll to bottom
-                    buildLogArea.setScrollTop(Double.MAX_VALUE);
+                    // Get current text safely
+                    String currentText = buildLogArea.getText();
+                    if (currentText == null) {
+                        currentText = "";
+                    }
+                    
+                    // Append the new text
+                    String newText = currentText + safeText;
+                    
+                    // Limit log size to prevent memory issues
+                    if (newText.length() > 100000) {
+                        int startIndex = newText.length() - 80000;
+                        newText = "... [log truncated] ...\n" + newText.substring(startIndex);
+                    }
+                    
+                    buildLogArea.setText(newText);
+                    
+                    // Position caret at end and scroll to bottom
+                    buildLogArea.positionCaret(buildLogArea.getText().length());
                 }
             } catch (Exception e) {
+                // If JavaFX fails, at least log to console
+                System.out.println("[BUILD LOG] " + safeText);
                 logger.warn("Error appending to build log: {}", e.getMessage());
             }
         } else {

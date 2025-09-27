@@ -114,6 +114,7 @@
                            </children>
                         </HBox>
                         <TextArea fx:id="buildLogArea" editable="false" wrapText="true" VBox.vgrow="ALWAYS" 
+                                  text="Ready for build..." 
                                   style="-fx-font-family: 'Courier New', monospace; -fx-font-size: 12px;" />
                      </children>
                   </VBox>
