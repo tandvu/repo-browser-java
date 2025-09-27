@@ -198,3 +198,13 @@
 .table-row-cell:focused .table-cell {
   -fx-text-fill: black !important;
 }
+
+/* Path display label styling */
+.path-display {
+  -fx-border-color: #cccccc;
+  -fx-border-width: 1;
+  -fx-border-radius: 3;
+  -fx-background-color: #f8f8f8;
+  -fx-padding: 5 8 5 8;
+  -fx-text-fill: #333333;
+}

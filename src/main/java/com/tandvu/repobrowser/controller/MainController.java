@@ -12,7 +12,11 @@ import javafx.scene.control.cell.CheckBoxTableCell;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
+import javafx.scene.media.Media;
+import javafx.scene.media.MediaPlayer;
+import javafx.scene.media.MediaView;
 import javafx.stage.DirectoryChooser;
+import javafx.stage.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,6 +53,7 @@ public class MainController implements Initializable {
     @FXML private Button browseButton;
     @FXML private TextField deploymentPathField;
     @FXML private Button browseDeploymentButton;
+    @FXML private Label soaPathLabel;
     @FXML private TextArea filterField;
     @FXML private TableView<Repository> repoTable;
     @FXML private TableColumn<Repository, Boolean> selectedColumn;
@@ -608,5 +613,49 @@ public class MainController implements Initializable {
     private void handleClearFilter() {
         filterField.clear();
         logger.info("Cleared filter text");
+    }
+
+    /**
+     * Play the How to Copy video in a new window
+     */
+    @FXML
+    private void playHowToCopyVideo() {
+        try {
+            URL videoUrl = getClass().getResource("/videos/Copy.mp4");
+            if (videoUrl == null) {
+                showAlert("Video Not Found", "The How to Copy video file (Copy.mp4) was not found in the resources.");
+                return;
+            }
+
+            Media media = new Media(videoUrl.toString());
+            MediaPlayer mediaPlayer = new MediaPlayer(media);
+            MediaView mediaView = new MediaView(mediaPlayer);
+            
+            // Set up the media view
+            mediaView.setFitWidth(800);
+            mediaView.setFitHeight(600);
+            mediaView.setPreserveRatio(true);
+
+            // Create a new stage for the video
+            Stage videoStage = new Stage();
+            videoStage.setTitle("How to Copy - Tutorial Video");
+            videoStage.setScene(new javafx.scene.Scene(new javafx.scene.layout.StackPane(mediaView), 800, 600));
+            
+            // Play the video when the stage is shown
+            videoStage.setOnShown(e -> mediaPlayer.play());
+            
+            // Clean up when the stage is closed
+            videoStage.setOnCloseRequest(e -> {
+                mediaPlayer.stop();
+                mediaPlayer.dispose();
+            });
+            
+            videoStage.show();
+            logger.info("Playing How to Copy video");
+            
+        } catch (Exception e) {
+            logger.error("Failed to play How to Copy video", e);
+            showAlert("Error", "Failed to play video: " + e.getMessage());
+        }
     }
 }

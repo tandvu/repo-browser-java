@@ -36,6 +36,14 @@
                      <Button fx:id="browseDeploymentButton" text="Browse..." onAction="#handleBrowseDeploymentButton" />
                   </children>
                </HBox>
+
+               <!-- SOA Path (Read-only) -->
+               <HBox alignment="CENTER_LEFT" spacing="8.0">
+                  <children>
+                     <Label text="SOA Path:" minWidth="120.0" />
+                     <Label fx:id="soaPathLabel" text="C:\AMPT_DEV\TRMC_MODULE" styleClass="path-display" HBox.hgrow="ALWAYS" />
+                  </children>
+               </HBox>
             </children>
          </VBox>
 
@@ -45,7 +53,9 @@
                <HBox alignment="CENTER_LEFT" spacing="10.0">
                   <children>
                      <Label text="Filter:" minWidth="60.0" />
-                     <Hyperlink text="Released" onAction="#openReleasedLink" />
+                     <Hyperlink text="Release URL" onAction="#openReleasedLink" />
+                     <Hyperlink text="How to Copy" onAction="#playHowToCopyVideo" />
+                     <Region HBox.hgrow="ALWAYS" />
                      <Button text="Paste" onAction="#handlePasteFromClipboard" />
                      <Button text="Clear" onAction="#handleClearFilter" />
                   </children>
