@@ -1,5 +1,7 @@
 package com.tandvu.repobrowser.controller;
 
+import javafx.scene.layout.StackPane;
+
 import com.tandvu.repobrowser.model.Repository;
 import com.tandvu.repobrowser.service.RepositoryScanner;
 import javafx.application.Platform;
@@ -51,6 +53,37 @@ import java.util.stream.Collectors;
  * Main controller for the Repo Browser application
  */
 public class MainController implements Initializable {
+    @FXML
+    private Button toggleIgnoredButton;
+
+    private boolean hideIgnored = false;
+    private static final String PREF_HIDE_IGNORED = "hide_ignored";
+
+    /**
+     * Toggle hiding/showing ignored repositories
+     */
+    @FXML
+    private void handleToggleIgnored() {
+    hideIgnored = !hideIgnored;
+    preferences.putBoolean(PREF_HIDE_IGNORED, hideIgnored);
+    updateFilteredRepositories();
+    toggleIgnoredButton.setText(hideIgnored ? "Show Ignored Repos" : "Hide Ignored Repos");
+    }
+
+    /**
+     * Update filteredRepositories based on filter and hideIgnored flag
+     */
+    private void updateFilteredRepositories() {
+        filteredRepositories.clear();
+        if (hideIgnored) {
+            filteredRepositories.addAll(repositories.stream().filter(r -> !r.isIgnore()).toList());
+        } else {
+            filteredRepositories.addAll(repositories);
+        }
+        repoTable.refresh();
+        updateHeaderCheckboxState();
+        updateStatusLabel();
+    }
     
     private static final Logger logger = LoggerFactory.getLogger(MainController.class);
     
@@ -102,17 +135,40 @@ public class MainController implements Initializable {
     
     @Override
     public void initialize(URL location, ResourceBundle resources) {
+        if (buildLogContainer != null) {
+            buildLogContainer.setVisible(false);
+        }
+        if (buildLogArea != null) {
+            buildLogArea.setPrefHeight(400);
+        }
+        if (buildLogArea != null) {
+            buildLogArea.setText("Log area is working. If you see this, UI is correct.\n");
+        }
+        // Runtime check for FXML injection
+        if (buildLogArea == null) {
+            Alert alert = new Alert(Alert.AlertType.ERROR);
+            alert.setTitle("FXML Injection Error");
+            alert.setHeaderText("buildLogArea is not injected");
+            alert.setContentText("The buildLogArea TextArea was not injected from FXML. Check fx:id and controller mapping.");
+            alert.showAndWait();
+        }
         logger.info("Initializing MainController");
-        
+
+        // Restore hideIgnored state from preferences
+        hideIgnored = preferences.getBoolean(PREF_HIDE_IGNORED, false);
+        if (toggleIgnoredButton != null) {
+            toggleIgnoredButton.setText(hideIgnored ? "Show Ignored Repos" : "Hide Ignored Repos");
+        }
+
         // Initialize build log area first to prevent JavaFX text rendering issues
         initializeBuildLogArea();
-        
+
         // Load saved paths from preferences
         loadSavedPaths();
-        
+
         // Setup table columns
         setupTableColumns();
-        
+
         // Ensure all columns are visible and table is editable
         repoTable.setEditable(true);
         repoTable.getColumns().forEach(col -> col.setVisible(true));
@@ -120,20 +176,20 @@ public class MainController implements Initializable {
 
         // Setup filter functionality
         setupFilter();
-        
+
         // Setup automatic scanning when path changes
         setupAutoScan();
-        
+
         // Setup build button state management
         setupBuildButtonState();
-        
+
         // Set initial status
         statusLabel.setText("Ready - Select a repository path to browse");
         progressBar.setVisible(false);
-        
+
         // Perform initial scan if default path exists
         performInitialScan();
-        
+
         logger.info("MainController initialized successfully");
     }
 
@@ -276,7 +332,11 @@ public class MainController implements Initializable {
                         if (isIgnored) {
                             repo.setSelected(false);
                         }
-                        repoTable.refresh();
+                        if (hideIgnored) {
+                            updateFilteredRepositories();
+                        } else {
+                            repoTable.refresh();
+                        }
                     });
                 }
             }
@@ -368,6 +428,7 @@ public class MainController implements Initializable {
     private void setupFilter() {
         filterField.textProperty().addListener((observable, oldValue, newValue) -> {
             filterRepositories(newValue);
+            updateFilteredRepositories();
         });
     }
     
@@ -563,8 +624,8 @@ public class MainController implements Initializable {
         statusLabel.setText("Scanning repositories...");
 
         // Clear existing repositories
-        repositories.clear();
-        filteredRepositories.clear();
+    repositories.clear();
+    filteredRepositories.clear();
 
         try {
             List<Repository> foundRepos = repositoryScanner.scanForRepositories(basePath);
@@ -594,7 +655,7 @@ public class MainController implements Initializable {
             // Sort all repositories (including opt-soa) alphabetically by name
             repositories.sort((r1, r2) -> r1.getName().compareToIgnoreCase(r2.getName()));
 
-            filteredRepositories.addAll(repositories);
+            updateFilteredRepositories();
 
             // Add listeners to each repository to update header checkbox and persist ignore state
             repositories.forEach(repo -> {
@@ -787,27 +848,33 @@ public class MainController implements Initializable {
     }
 
     private void startBuildProcess(Repository repository) {
+        if (buildLogArea != null) {
+            buildLogArea.appendText("[TEST] buildLogArea injection works.\n");
+        }
+        // Ensure build log container is visible and brought to front
+        if (buildLogContainer != null && buildLogContainer.getParent() instanceof StackPane) {
+            StackPane stack = (StackPane) buildLogContainer.getParent();
+            buildLogContainer.setVisible(true);
+            buildLogContainer.toFront();
+        }
         // Hide table, show build log
+        if (buildLogArea != null) {
+            buildLogArea.appendText("[DIAG] startBuildProcess called for " + repository.getName() + "\n");
+            buildLogArea.appendText("Build started for " + repository.getName() + "\n");
+            buildLogArea.appendText("Building " + repository.getName() + "...\n");
+        }
         repoTable.setVisible(false);
-        buildLogContainer.setVisible(true);
+        if (buildLogContainer != null) {
+            buildLogContainer.setVisible(true);
+        }
         buildMasterButton.setDisable(true);
-        
-        // Clear previous log and ensure it's ready
-        Platform.runLater(() -> {
-            if (buildLogArea != null) {
-                buildLogArea.clear();
-                buildLogArea.setText(""); // Explicitly set to empty string
-            }
-            buildStatusLabel.setText("Building " + repository.getName() + "...");
-        });
-        
-        // Small delay to ensure UI is updated
+        buildStatusLabel.setText("Building " + repository.getName() + "...");
         try {
             Thread.sleep(100);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        
+
         // Get repository path
         String basePath = basePathField.getText().trim();
         if (basePath.isEmpty()) {
@@ -816,15 +883,21 @@ public class MainController implements Initializable {
             buildMasterButton.setDisable(false);
             return;
         }
-        
-        Path repoPath = Paths.get(basePath, repository.getName());
+
+        Path repoPath;
+        if (repository.getName().equalsIgnoreCase("opt-soa")) {
+            String soaPath = soaPathLabel.getText().trim();
+            repoPath = Paths.get(soaPath, "opt-soa");
+        } else {
+            repoPath = Paths.get(basePath, repository.getName());
+        }
         if (!Files.exists(repoPath)) {
             appendToBuildLog("ERROR: Repository path does not exist: " + repoPath + "\n");
             buildStatusLabel.setText("Build Failed");
             buildMasterButton.setDisable(false);
             return;
         }
-        
+
         // Start build process in background thread
         Task<Void> buildTask = new Task<Void>() {
             @Override
@@ -832,139 +905,210 @@ public class MainController implements Initializable {
                 try {
                     final Repository finalRepository = repository;
                     final Path finalRepoPath = repoPath;
-                    
-                    // Step 1: Check if it's a git repository
-                    appendToBuildLog("=== Checking Git Repository ===\n");
-                    if (!Files.exists(finalRepoPath.resolve(".git"))) {
-                        appendToBuildLog("ERROR: Not a git repository: " + finalRepoPath + "\n");
-                        Platform.runLater(() -> {
-                            buildStatusLabel.setText("Build Failed");
-                            buildMasterButton.setDisable(false);
-                        });
-                        return null;
-                    }
-                    
-                    // Step 2: Checkout master branch
-                    appendToBuildLog("=== Checking out master branch ===\n");
-                    ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", "master");
-                    gitCheckout.directory(finalRepoPath.toFile());
-                    gitCheckout.redirectErrorStream(true);
-                    
-                    Process gitProcess = gitCheckout.start();
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(gitProcess.getInputStream()))) {
-                        String line;
-                        while ((line = reader.readLine()) != null) {
-                            final String logLine = line != null ? line : "";
-                            Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+
+                    if (!finalRepository.getName().equalsIgnoreCase("opt-soa")) {
+                        // Step 1: Check if it's a git repository
+                        appendToBuildLog("=== Checking Git Repository ===\n");
+                        if (!Files.exists(finalRepoPath.resolve(".git"))) {
+                            appendToBuildLog("ERROR: Not a git repository: " + finalRepoPath + "\n");
+                            Platform.runLater(() -> {
+                                buildStatusLabel.setText("Build Failed");
+                                buildMasterButton.setDisable(false);
+                            });
+                            return null;
+                        }
+
+                        // Step 2: Checkout master branch
+                        appendToBuildLog("=== Checking out master branch ===\n");
+                        ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", "master");
+                        gitCheckout.directory(finalRepoPath.toFile());
+                        gitCheckout.redirectErrorStream(true);
+
+                        Process gitProcess = gitCheckout.start();
+                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(gitProcess.getInputStream()))) {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                final String logLine = line != null ? line : "";
+                                Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                            }
+                        }
+
+                        int gitExitCode = gitProcess.waitFor();
+                        if (gitExitCode != 0) {
+                            Platform.runLater(() -> {
+                                appendToBuildLog("ERROR: Git checkout failed with exit code: " + gitExitCode + "\n");
+                                buildStatusLabel.setText("Build Failed");
+                                buildMasterButton.setDisable(false);
+                            });
+                            return null;
+                        }
+
+                        // Step 3: Pull latest changes
+                        appendToBuildLog("=== Pulling latest changes ===\n");
+                        ProcessBuilder gitPull = new ProcessBuilder("git", "pull");
+                        gitPull.directory(finalRepoPath.toFile());
+                        gitPull.redirectErrorStream(true);
+
+                        Process pullProcess = gitPull.start();
+                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(pullProcess.getInputStream()))) {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                final String logLine = line != null ? line : "";
+                                Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                            }
+                        }
+
+                        int pullExitCode = pullProcess.waitFor();
+                        if (pullExitCode != 0) {
+                            Platform.runLater(() -> {
+                                appendToBuildLog("WARNING: Git pull failed with exit code: " + pullExitCode + "\n");
+                                appendToBuildLog("Continuing with build...\n");
+                            });
                         }
                     }
-                    
-                    int gitExitCode = gitProcess.waitFor();
-                    if (gitExitCode != 0) {
-                        Platform.runLater(() -> {
-                            appendToBuildLog("ERROR: Git checkout failed with exit code: " + gitExitCode + "\n");
-                            buildStatusLabel.setText("Build Failed");
-                            buildMasterButton.setDisable(false);
-                        });
-                        return null;
-                    }
-                    
-                    // Step 3: Pull latest changes
-                    appendToBuildLog("=== Pulling latest changes ===\n");
-                    ProcessBuilder gitPull = new ProcessBuilder("git", "pull");
-                    gitPull.directory(finalRepoPath.toFile());
-                    gitPull.redirectErrorStream(true);
-                    
-                    Process pullProcess = gitPull.start();
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(pullProcess.getInputStream()))) {
-                        String line;
-                        while ((line = reader.readLine()) != null) {
-                            final String logLine = line != null ? line : "";
-                            Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
-                        }
-                    }
-                    
-                    int pullExitCode = pullProcess.waitFor();
-                    if (pullExitCode != 0) {
-                        Platform.runLater(() -> {
-                            appendToBuildLog("WARNING: Git pull failed with exit code: " + pullExitCode + "\n");
-                            appendToBuildLog("Continuing with build...\n");
-                        });
-                    }
-                    
-                    // Step 4: Check for package.json
-                    appendToBuildLog("=== Checking for package.json ===\n");
-                    if (!Files.exists(repoPath.resolve("package.json"))) {
-                        Platform.runLater(() -> {
-                            appendToBuildLog("ERROR: package.json not found in repository\n");
-                            buildStatusLabel.setText("Build Failed");
-                            buildMasterButton.setDisable(false);
-                        });
-                        return null;
-                    }
-                    
-                    // Step 5: Run npm run build
-                    appendToBuildLog("=== Running npm run build ===\n");
-                    
-                    // Create npm command for Windows compatibility
-                    ProcessBuilder npmBuild;
-                    String os = System.getProperty("os.name").toLowerCase();
-                    if (os.contains("win")) {
-                        // On Windows, use cmd to run npm
-                        npmBuild = new ProcessBuilder("cmd", "/c", "npm", "run", "build");
-                    } else {
-                        // On Unix-like systems
-                        npmBuild = new ProcessBuilder("npm", "run", "build");
-                    }
-                    
-                    npmBuild.directory(finalRepoPath.toFile());
-                    npmBuild.redirectErrorStream(true);
-                    
-                    // Log the command being executed
-                    String commandStr = String.join(" ", npmBuild.command());
-                    appendToBuildLog("Executing: " + commandStr + "\n");
-                    appendToBuildLog("Working directory: " + repoPath.toString() + "\n\n");
-                    
-                    Process npmProcess;
-                    try {
-                        npmProcess = npmBuild.start();
-                    } catch (IOException e) {
-                        Platform.runLater(() -> {
-                            appendToBuildLog("ERROR: Failed to start npm process: " + e.getMessage() + "\n");
-                            appendToBuildLog("This might indicate that npm is not installed or not in PATH.\n");
-                            appendToBuildLog("Please ensure Node.js and npm are properly installed.\n");
-                            buildStatusLabel.setText("Build Failed - npm not found");
-                            buildMasterButton.setDisable(false);
-                        });
-                        return null;
-                    }
-                    
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(npmProcess.getInputStream()))) {
-                        String line;
-                        while ((line = reader.readLine()) != null) {
-                            final String logLine = line != null ? line : "";
-                            Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
-                        }
-                    }
-                    
-                    int npmExitCode = npmProcess.waitFor();
-                    Platform.runLater(() -> {
-                        if (npmExitCode == 0) {
-                            appendToBuildLog("\n=== Build Completed Successfully ===\n");
-                            buildStatusLabel.setText("Build Successful - Deploying...");
-                            
-                            // Start deployment in background
-                            Task<Void> deployTask = createDeploymentTask(finalRepository, finalRepoPath);
-                            Thread deployThread = new Thread(deployTask);
-                            deployThread.setDaemon(true);
-                            deployThread.start();
+
+                    // Step 4: Build logic for opt-soa or others
+                    if (finalRepository.getName().equalsIgnoreCase("opt-soa")) {
+                        appendToBuildLog("[DIAG] About to start Maven process for opt-soa...\n");
+                        appendToBuildLog("[DIAG] opt-soa build directory: " + finalRepoPath.toString() + "\n");
+                        if (!new File(finalRepoPath.toFile(), "pom.xml").exists()) {
+                            appendToBuildLog("[DIAG] pom.xml not found in opt-soa directory!\n");
                         } else {
-                            appendToBuildLog("\nERROR: npm run build failed with exit code: " + npmExitCode + "\n");
-                            buildStatusLabel.setText("Build Failed");
-                            buildMasterButton.setDisable(false);
+                            appendToBuildLog("[DIAG] pom.xml found in opt-soa directory.\n");
                         }
-                    });
-                    
+                        appendToBuildLog("=== Running mvn clean install for opt-soa ===\n");
+                        ProcessBuilder mvnBuild;
+                        String os = System.getProperty("os.name").toLowerCase();
+                        if (os.contains("win")) {
+                            mvnBuild = new ProcessBuilder("cmd", "/c", "mvn", "clean", "install");
+                        } else {
+                            mvnBuild = new ProcessBuilder("mvn", "clean", "install");
+                        }
+                        mvnBuild.directory(finalRepoPath.toFile());
+                        mvnBuild.redirectErrorStream(true);
+
+                        String commandStr = String.join(" ", mvnBuild.command());
+                        appendToBuildLog("Executing: " + commandStr + "\n");
+                        appendToBuildLog("Working directory: " + repoPath.toString() + "\n\n");
+
+                        Process mvnProcess;
+                        try {
+                            mvnProcess = mvnBuild.start();
+                            appendToBuildLog("[DIAG] Maven process started.\n");
+                            appendToBuildLog("[DIAG] Exception occurred while starting Maven process.\n");
+                        } catch (IOException e) {
+                            Platform.runLater(() -> {
+                                appendToBuildLog("[DIAG] ERROR: Failed to start Maven process: " + e.getMessage() + "\n");
+                                appendToBuildLog("This might indicate that Maven is not installed or not in PATH.\n");
+                                appendToBuildLog("Please ensure Maven is properly installed.\n");
+                                buildStatusLabel.setText("Build Failed - Maven not found");
+                                buildMasterButton.setDisable(false);
+                            });
+                            return null;
+                        }
+
+                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(mvnProcess.getInputStream()))) {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                final String logLine = line != null ? line : "";
+                                if (Platform.isFxApplicationThread()) {
+                                    appendToBuildLog(logLine + "\n");
+                                } else {
+                                    Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                                }
+                            }
+                        }
+
+                        int mvnExitCode = mvnProcess.waitFor();
+                        Platform.runLater(() -> {
+                            if (mvnExitCode == 0) {
+                                appendToBuildLog("\n=== Build Completed Successfully ===\n");
+                                buildStatusLabel.setText("Build Successful - Deploying...");
+                                // Start deployment in background
+                                Task<Void> deployTask = createDeploymentTask(finalRepository, finalRepoPath);
+                                Thread deployThread = new Thread(deployTask);
+                                deployThread.setDaemon(true);
+                                deployThread.start();
+                            } else {
+                                appendToBuildLog("\nERROR: mvn clean install failed with exit code: " + mvnExitCode + "\n");
+                                buildStatusLabel.setText("Build Failed");
+                                buildMasterButton.setDisable(false);
+                            }
+                        });
+                    } else {
+                        // Step 4: Check for package.json
+                        appendToBuildLog("=== Checking for package.json ===\n");
+                        if (!Files.exists(repoPath.resolve("package.json"))) {
+                            Platform.runLater(() -> {
+                                appendToBuildLog("ERROR: package.json not found in repository\n");
+                                buildStatusLabel.setText("Build Failed");
+                                buildMasterButton.setDisable(false);
+                            });
+                            return null;
+                        }
+
+                        // Step 5: Run npm run build
+                        appendToBuildLog("=== Running npm run build ===\n");
+
+                        // Create npm command for Windows compatibility
+                        ProcessBuilder npmBuild;
+                        String os = System.getProperty("os.name").toLowerCase();
+                        if (os.contains("win")) {
+                            // On Windows, use cmd to run npm
+                            npmBuild = new ProcessBuilder("cmd", "/c", "npm", "run", "build");
+                        } else {
+                            // On Unix-like systems
+                            npmBuild = new ProcessBuilder("npm", "run", "build");
+                        }
+
+                        npmBuild.directory(finalRepoPath.toFile());
+                        npmBuild.redirectErrorStream(true);
+
+                        // Log the command being executed
+                        String commandStr = String.join(" ", npmBuild.command());
+                        appendToBuildLog("Executing: " + commandStr + "\n");
+                        appendToBuildLog("Working directory: " + repoPath.toString() + "\n\n");
+
+                        Process npmProcess;
+                        try {
+                            npmProcess = npmBuild.start();
+                        } catch (IOException e) {
+                            Platform.runLater(() -> {
+                                appendToBuildLog("ERROR: Failed to start npm process: " + e.getMessage() + "\n");
+                                appendToBuildLog("This might indicate that npm is not installed or not in PATH.\n");
+                                appendToBuildLog("Please ensure Node.js and npm are properly installed.\n");
+                                buildStatusLabel.setText("Build Failed - npm not found");
+                                buildMasterButton.setDisable(false);
+                            });
+                            return null;
+                        }
+
+                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(npmProcess.getInputStream()))) {
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                final String logLine = line != null ? line : "";
+                                Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                            }
+                        }
+
+                        int npmExitCode = npmProcess.waitFor();
+                        Platform.runLater(() -> {
+                            if (npmExitCode == 0) {
+                                appendToBuildLog("\n=== Build Completed Successfully ===\n");
+                                buildStatusLabel.setText("Build Successful - Deploying...");
+                                // Start deployment in background
+                                Task<Void> deployTask = createDeploymentTask(finalRepository, finalRepoPath);
+                                Thread deployThread = new Thread(deployTask);
+                                deployThread.setDaemon(true);
+                                deployThread.start();
+                            } else {
+                                appendToBuildLog("\nERROR: npm run build failed with exit code: " + npmExitCode + "\n");
+                                buildStatusLabel.setText("Build Failed");
+                                buildMasterButton.setDisable(false);
+                            }
+                        });
+                    }
+
                 } catch (Exception e) {
                     Platform.runLater(() -> {
                         appendToBuildLog("ERROR: " + e.getMessage() + "\n");
@@ -973,11 +1117,11 @@ public class MainController implements Initializable {
                     });
                     logger.error("Build process failed", e);
                 }
-                
+
                 return null;
             }
         };
-        
+
         // Run build task in background
         Thread buildThread = new Thread(buildTask);
         buildThread.setDaemon(true);
@@ -1015,19 +1159,24 @@ public class MainController implements Initializable {
                         return null;
                     }
                     
-                    // Look for WAR files in the build output directory
-                    Path targetDir = repoPath.resolve("target");
-                    if (!Files.exists(targetDir)) {
-                        // Try dist directory for some projects
-                        targetDir = repoPath.resolve("dist");
+                    // Special case for opt-soa: look for WAR files under SOA/target
+                    Path targetDir;
+                    if (repository.getName().equalsIgnoreCase("opt-soa")) {
+                        targetDir = repoPath.resolve("SOA").resolve("target");
+                    } else {
+                        targetDir = repoPath.resolve("target");
+                        if (!Files.exists(targetDir)) {
+                            // Try dist directory for some projects
+                            targetDir = repoPath.resolve("dist");
+                        }
+                        if (!Files.exists(targetDir)) {
+                            // Try build directory
+                            targetDir = repoPath.resolve("build");
+                        }
                     }
-                    if (!Files.exists(targetDir)) {
-                        // Try build directory
-                        targetDir = repoPath.resolve("build");
-                    }
-                    
+
                     final Path finalTargetDir = targetDir;
-                    
+
                     if (!Files.exists(finalTargetDir)) {
                         Platform.runLater(() -> {
                             appendToBuildLog("ERROR: No target/dist/build directory found in repository\n");
