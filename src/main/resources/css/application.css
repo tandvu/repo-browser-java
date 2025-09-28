@@ -16,6 +16,14 @@
   -fx-cursor: hand;
 }
 
+.button:disabled {
+  -fx-background-color: #eeeeee;
+  -fx-text-fill: #a0a0a0;
+  -fx-border-color: #dddddd;
+  -fx-opacity: 1.0;
+  -fx-cursor: default;
+}
+
 .button:hover {
   -fx-background-color: #e6e6e6;
 }
@@ -28,6 +36,14 @@
   -fx-background-color: #007acc;
   -fx-text-fill: white;
   -fx-border-color: #005a9e;
+}
+
+.primary-button:disabled {
+  -fx-background-color: #b0c4de;
+  -fx-text-fill: #e0e0e0;
+  -fx-border-color: #b0b0b0;
+  -fx-opacity: 1.0;
+  -fx-cursor: default;
 }
 
 .primary-button:hover {

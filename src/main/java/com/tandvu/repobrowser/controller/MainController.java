@@ -77,7 +77,9 @@ public class MainController implements Initializable {
     @FXML private TableColumn<Repository, String> repoVersionColumn;
     @FXML private TableColumn<Repository, String> targetedVersionColumn;
         @FXML
-    private TableColumn<Repository, String> deploymentVersionColumn;
+        private TableColumn<Repository, String> deploymentVersionColumn;
+        @FXML
+        private TableColumn<Repository, String> deploymentModifiedColumn;
     @FXML
     private Button buildMasterButton;
     @FXML
@@ -234,7 +236,8 @@ public class MainController implements Initializable {
         targetedVersionColumn.setCellValueFactory(new PropertyValueFactory<>("targetedVersion"));
         
         // Deployment version column
-        deploymentVersionColumn.setCellValueFactory(new PropertyValueFactory<>("deploymentVersion"));
+    deploymentVersionColumn.setCellValueFactory(new PropertyValueFactory<>("deploymentVersion"));
+    deploymentModifiedColumn.setCellValueFactory(new PropertyValueFactory<>("deploymentModified"));
 
         // Make table editable for checkboxes
         repoTable.setEditable(true);
@@ -279,7 +282,7 @@ public class MainController implements Initializable {
             }
         });
 
-        // Custom cell factory for Selected column to disable checkbox if Ignore is checked
+        // Custom cell factory for Selected column to hide checkbox if Ignored is checked
         selectedColumn.setCellFactory(col -> new CheckBoxTableCell<Repository, Boolean>() {
             @Override
             public void updateItem(Boolean selected, boolean empty) {
@@ -287,10 +290,11 @@ public class MainController implements Initializable {
                 TableRow<Repository> row = getTableRow();
                 Repository repo = row == null ? null : row.getItem();
                 if (repo != null && repo.isIgnore()) {
-                    setDisable(true);
+                    setGraphic(null); // Hide checkbox
                 } else {
-                    setDisable(false);
+                    setGraphic(getGraphic()); // Show checkbox
                 }
+                setDisable(repo != null && repo.isIgnore());
             }
         });
     }
@@ -308,17 +312,18 @@ public class MainController implements Initializable {
         // Handle header checkbox action
         headerCheckBox.setOnAction(event -> {
             boolean isSelected = headerCheckBox.isSelected();
-            
-            // Apply to all visible (filtered) repositories
-            filteredRepositories.forEach(repo -> repo.setSelected(isSelected));
+            // Apply to all visible (filtered) repositories except ignored
+            filteredRepositories.forEach(repo -> {
+                if (!repo.isIgnore()) {
+                    repo.setSelected(isSelected);
+                }
+            });
             repoTable.refresh();
-            
             if (isSelected) {
-                logger.info("Selected all visible repositories via header checkbox");
+                logger.info("Selected all visible repositories via header checkbox (excluding ignored)");
             } else {
                 logger.info("Cleared all repository selections via header checkbox");
             }
-            
             updateStatusLabel();
             updateBuildButtonState();
         });
@@ -1275,55 +1280,93 @@ public class MainController implements Initializable {
             // Build a map from repo key (e.g., orgchart) to version from WAR files
             Map<String, String> deployedVersions = new HashMap<>();
             File[] warFiles = depDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".war"));
+            // Map from war file name (lowercase) to last modified date string
+            Map<String, String> warModifiedMap = new HashMap<>();
             if (warFiles != null) {
                 logger.info("Found {} WAR files in deployment directory", warFiles.length);
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("M/d/yyyy h:mm a");
                 for (File war : warFiles) {
                     String name = war.getName().toLowerCase();
                     logger.debug("Processing WAR file: {}", name);
-                    
+                    String modified = sdf.format(new java.util.Date(war.lastModified()));
+                    warModifiedMap.put(name, modified);
+
                     // Handle opt-soa pattern: opt-soa-<version>.war
                     java.util.regex.Matcher soaMatcher = java.util.regex.Pattern
                         .compile("^opt-soa-([0-9][a-z0-9.-]*)\\.war$")
                         .matcher(name);
                     if (soaMatcher.find()) {
                         String version = soaMatcher.group(1);
-                        deployedVersions.put("soa", version); // map to "soa" suffix for opt-soa
-                        logger.info("Detected SOA deployment: opt-soa -> version {}", version);
+                        deployedVersions.put("soa", version);
                         continue;
                     }
-                    
+
+                    // Handle webmap and webmap-data-service
+                    java.util.regex.Matcher webmapMatcher = java.util.regex.Pattern
+                        .compile("^(webmap|webmap-data-service)-([0-9][a-z0-9.-]*)\\.war$")
+                        .matcher(name);
+                    if (webmapMatcher.find()) {
+                        String repoKey = webmapMatcher.group(1);
+                        String version = webmapMatcher.group(2);
+                        deployedVersions.put(repoKey, version);
+                        continue;
+                    }
+
                     // Handle regular ampt pattern: ampt-<suffix>-<version>.war
                     java.util.regex.Matcher amptMatcher = java.util.regex.Pattern
                         .compile("^ampt-([a-z0-9-]+)-([0-9][a-z0-9.-]*)\\.war$")
                         .matcher(name);
                     if (amptMatcher.find()) {
-                        String suffix = amptMatcher.group(1);      // e.g., orgchart
-                        String version = amptMatcher.group(2);     // e.g., 3.4.0 or 3.4.0-SNAPSHOT
+                        String suffix = amptMatcher.group(1);
+                        String version = amptMatcher.group(2);
                         deployedVersions.put(suffix, version);
-                        logger.info("Detected AMPT deployment: {} -> version {}", suffix, version);
-                    } else {
-                        logger.debug("WAR file does not match expected patterns: {}", name);
                     }
                 }
             }
-            
-            // Clear previous deployment versions
-            repositories.forEach(r -> r.setDeploymentVersion(""));
-            
+
+            // Clear previous deployment versions and modified dates
+            repositories.forEach(r -> { r.setDeploymentVersion(""); r.setDeploymentModified(""); });
+
             if (!deployedVersions.isEmpty()) {
                 for (Repository repo : repositories) {
-                    String repoName = repo.getName().toLowerCase(); // e.g., opt-orgchart, opt-soa
+                    String repoName = repo.getName().toLowerCase();
+                    String warFileName = null;
+                    String version = null;
                     // map opt-<suffix> -> <suffix>
                     if (repoName.startsWith("opt-")) {
                         String suffix = repoName.substring(4);
-                        String version = deployedVersions.get(suffix);
+                        version = deployedVersions.get(suffix);
                         if (version != null) {
                             repo.setDeploymentVersion(version);
+                            warFileName = "ampt-" + suffix + "-" + version + ".war";
+                        }
+                    }
+                    // Handle webmap and webmap-data-service directly
+                    if (repoName.equals("webmap") || repoName.equals("webmap-data-service")) {
+                        version = deployedVersions.get(repoName);
+                        if (version != null) {
+                            repo.setDeploymentVersion(version);
+                            warFileName = repoName + "-" + version + ".war";
+                        }
+                    }
+                    // Handle opt-soa
+                    if (repoName.equals("opt-soa")) {
+                        version = deployedVersions.get("soa");
+                        if (version != null) {
+                            repo.setDeploymentVersion(version);
+                            warFileName = "opt-soa-" + version + ".war";
+                        }
+                    }
+                    // Set deploymentModified if warFileName found
+                    if (warFileName != null) {
+                        String modified = warModifiedMap.get(warFileName.toLowerCase());
+                        if (modified != null) {
+                            repo.setDeploymentModified(modified);
                         }
                     }
                 }
                 repoTable.refresh();
-                logger.info("Updated deployment versions for {} repositories based on {} WAR files",
+                logger.info("Updated deployment versions and modified dates for {} repositories based on {} WAR files",
                         repositories.stream().filter(r -> !r.getDeploymentVersion().isEmpty()).count(),
                         deployedVersions.size());
             }

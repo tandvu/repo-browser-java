@@ -16,6 +16,7 @@ public class Repository {
     private final StringProperty repoVersion;
     private final StringProperty targetedVersion;
     private final StringProperty deploymentVersion;
+    private final StringProperty deploymentModified; // Date/time of deployment WAR file
     private final BooleanProperty ignore; // Added ignore property
     
     public Repository(String name, String path) {
@@ -25,7 +26,21 @@ public class Repository {
         this.repoVersion = new SimpleStringProperty("");
         this.targetedVersion = new SimpleStringProperty("");
         this.deploymentVersion = new SimpleStringProperty("");
+        this.deploymentModified = new SimpleStringProperty("");
         this.ignore = new SimpleBooleanProperty(false); // Initialize ignore property
+    }
+
+    // Deployment Modified property
+    public String getDeploymentModified() {
+        return deploymentModified.get();
+    }
+
+    public void setDeploymentModified(String deploymentModified) {
+        this.deploymentModified.set(deploymentModified != null ? deploymentModified : "");
+    }
+
+    public StringProperty deploymentModifiedProperty() {
+        return deploymentModified;
     }
     
     // Name property
@@ -121,8 +136,8 @@ public class Repository {
     
     @Override
     public String toString() {
-        return String.format("Repository{name='%s', path='%s', selected=%s, repoVersion='%s', targetedVersion='%s', deploymentVersion='%s'}", 
-            getName(), getPath(), isSelected(), getRepoVersion(), getTargetedVersion(), getDeploymentVersion());
+        return String.format("Repository{name='%s', path='%s', selected=%s, repoVersion='%s', targetedVersion='%s', deploymentVersion='%s', deploymentModified='%s'}", 
+            getName(), getPath(), isSelected(), getRepoVersion(), getTargetedVersion(), getDeploymentVersion(), getDeploymentModified());
     }
     
     @Override
