@@ -141,17 +141,6 @@ public class MainController implements Initializable {
         if (buildLogArea != null) {
             buildLogArea.setPrefHeight(400);
         }
-        if (buildLogArea != null) {
-            buildLogArea.setText("Log area is working. If you see this, UI is correct.\n");
-        }
-        // Runtime check for FXML injection
-        if (buildLogArea == null) {
-            Alert alert = new Alert(Alert.AlertType.ERROR);
-            alert.setTitle("FXML Injection Error");
-            alert.setHeaderText("buildLogArea is not injected");
-            alert.setContentText("The buildLogArea TextArea was not injected from FXML. Check fx:id and controller mapping.");
-            alert.showAndWait();
-        }
         logger.info("Initializing MainController");
 
         // Restore hideIgnored state from preferences
@@ -830,13 +819,15 @@ public class MainController implements Initializable {
             return;
         }
 
-        if (selectedRepos.size() > 1) {
-            showAlert("Multiple Selection", "Please select only one repository to build.");
-            return;
+        // Check if single or multiple repositories are selected
+        if (selectedRepos.size() == 1) {
+            // Single repository build
+            Repository selectedRepo = selectedRepos.get(0);
+            startBuildProcess(selectedRepo);
+        } else {
+            // Batch build for multiple repositories
+            startBatchBuild(selectedRepos);
         }
-
-        Repository selectedRepo = selectedRepos.get(0);
-        startBuildProcess(selectedRepo);
     }
 
     @FXML
@@ -848,9 +839,6 @@ public class MainController implements Initializable {
     }
 
     private void startBuildProcess(Repository repository) {
-        if (buildLogArea != null) {
-            buildLogArea.appendText("[TEST] buildLogArea injection works.\n");
-        }
         // Ensure build log container is visible and brought to front
         if (buildLogContainer != null && buildLogContainer.getParent() instanceof StackPane) {
             StackPane stack = (StackPane) buildLogContainer.getParent();
@@ -859,7 +847,6 @@ public class MainController implements Initializable {
         }
         // Hide table, show build log
         if (buildLogArea != null) {
-            buildLogArea.appendText("[DIAG] startBuildProcess called for " + repository.getName() + "\n");
             buildLogArea.appendText("Build started for " + repository.getName() + "\n");
             buildLogArea.appendText("Building " + repository.getName() + "...\n");
         }
@@ -969,13 +956,6 @@ public class MainController implements Initializable {
 
                     // Step 4: Build logic for opt-soa or others
                     if (finalRepository.getName().equalsIgnoreCase("opt-soa")) {
-                        appendToBuildLog("[DIAG] About to start Maven process for opt-soa...\n");
-                        appendToBuildLog("[DIAG] opt-soa build directory: " + finalRepoPath.toString() + "\n");
-                        if (!new File(finalRepoPath.toFile(), "pom.xml").exists()) {
-                            appendToBuildLog("[DIAG] pom.xml not found in opt-soa directory!\n");
-                        } else {
-                            appendToBuildLog("[DIAG] pom.xml found in opt-soa directory.\n");
-                        }
                         appendToBuildLog("=== Running mvn clean install for opt-soa ===\n");
                         ProcessBuilder mvnBuild;
                         String os = System.getProperty("os.name").toLowerCase();
@@ -994,11 +974,9 @@ public class MainController implements Initializable {
                         Process mvnProcess;
                         try {
                             mvnProcess = mvnBuild.start();
-                            appendToBuildLog("[DIAG] Maven process started.\n");
-                            appendToBuildLog("[DIAG] Exception occurred while starting Maven process.\n");
                         } catch (IOException e) {
                             Platform.runLater(() -> {
-                                appendToBuildLog("[DIAG] ERROR: Failed to start Maven process: " + e.getMessage() + "\n");
+                                appendToBuildLog("ERROR: Failed to start Maven process: " + e.getMessage() + "\n");
                                 appendToBuildLog("This might indicate that Maven is not installed or not in PATH.\n");
                                 appendToBuildLog("Please ensure Maven is properly installed.\n");
                                 buildStatusLabel.setText("Build Failed - Maven not found");
@@ -1126,6 +1104,354 @@ public class MainController implements Initializable {
         Thread buildThread = new Thread(buildTask);
         buildThread.setDaemon(true);
         buildThread.start();
+    }
+    
+    /**
+     * Start batch build process for multiple repositories sequentially
+     */
+    private void startBatchBuild(List<Repository> repositories) {
+        // Show build log
+        repoTable.setVisible(false);
+        if (buildLogContainer != null) {
+            buildLogContainer.setVisible(true);
+            if (buildLogContainer.getParent() instanceof javafx.scene.layout.StackPane) {
+                buildLogContainer.toFront();
+            }
+        }
+        
+        // Clear previous log
+        if (buildLogArea != null) {
+            buildLogArea.clear();
+            buildLogArea.appendText("=== Batch Build Started ===\n");
+            buildLogArea.appendText("Building " + repositories.size() + " repositories sequentially\n\n");
+        }
+        
+        buildMasterButton.setDisable(true);
+        buildStatusLabel.setText("Batch Building " + repositories.size() + " repositories...");
+        
+        // Create batch build task
+        Task<Void> batchBuildTask = new Task<Void>() {
+            @Override
+            protected Void call() throws Exception {
+                int successCount = 0;
+                int failureCount = 0;
+                
+                for (int i = 0; i < repositories.size(); i++) {
+                    Repository repo = repositories.get(i);
+                    final int repoIndex = i + 1;
+                    final int totalRepos = repositories.size();
+                    
+                    Platform.runLater(() -> {
+                        appendToBuildLog("========================================\n");
+                        appendToBuildLog("=== Building Repository " + repoIndex + "/" + totalRepos + ": " + repo.getName() + " ===\n");
+                        appendToBuildLog("========================================\n");
+                        buildStatusLabel.setText("Building " + repoIndex + "/" + totalRepos + ": " + repo.getName());
+                    });
+                    
+                    // Build single repository
+                    boolean buildSuccess = buildSingleRepository(repo);
+                    
+                    if (buildSuccess) {
+                        successCount++;
+                        Platform.runLater(() -> {
+                            appendToBuildLog("✓ Repository " + repo.getName() + " built and deployed successfully\n\n");
+                        });
+                    } else {
+                        failureCount++;
+                        Platform.runLater(() -> {
+                            appendToBuildLog("✗ Repository " + repo.getName() + " build/deployment failed\n\n");
+                        });
+                    }
+                }
+                
+                // Final summary
+                final int finalSuccessCount = successCount;
+                final int finalFailureCount = failureCount;
+                Platform.runLater(() -> {
+                    appendToBuildLog("========================================\n");
+                    appendToBuildLog("=== Batch Build Complete ===\n");
+                    appendToBuildLog("Total: " + repositories.size() + " repositories\n");
+                    appendToBuildLog("Successful: " + finalSuccessCount + "\n");
+                    appendToBuildLog("Failed: " + finalFailureCount + "\n");
+                    appendToBuildLog("========================================\n");
+                    
+                    if (finalFailureCount == 0) {
+                        buildStatusLabel.setText("Batch Build Successful - All " + repositories.size() + " repos deployed");
+                    } else {
+                        buildStatusLabel.setText("Batch Build Complete - " + finalSuccessCount + " succeeded, " + finalFailureCount + " failed");
+                    }
+                    buildMasterButton.setDisable(false);
+                });
+                
+                return null;
+            }
+        };
+        
+        // Run batch build task in background
+        Thread batchBuildThread = new Thread(batchBuildTask);
+        batchBuildThread.setDaemon(true);
+        batchBuildThread.start();
+    }
+    
+    /**
+     * Build a single repository and return success status
+     * Used by batch build process
+     */
+    private boolean buildSingleRepository(Repository repository) {
+        try {
+            // Get repository path
+            String basePath = basePathField.getText().trim();
+            if (basePath.isEmpty()) {
+                Platform.runLater(() -> appendToBuildLog("ERROR: No repository path configured\n"));
+                return false;
+            }
+
+            Path repoPath;
+            if (repository.getName().equalsIgnoreCase("opt-soa")) {
+                String soaPath = soaPathLabel.getText().trim();
+                repoPath = Paths.get(soaPath, "opt-soa");
+            } else {
+                repoPath = Paths.get(basePath, repository.getName());
+            }
+            
+            if (!Files.exists(repoPath)) {
+                Platform.runLater(() -> appendToBuildLog("ERROR: Repository path does not exist: " + repoPath + "\n"));
+                return false;
+            }
+
+            // Git operations (skip for opt-soa)
+            if (!repository.getName().equalsIgnoreCase("opt-soa")) {
+                // Check if it's a git repository
+                Platform.runLater(() -> appendToBuildLog("=== Checking Git Repository ===\n"));
+                if (!Files.exists(repoPath.resolve(".git"))) {
+                    Platform.runLater(() -> appendToBuildLog("ERROR: Not a git repository: " + repoPath + "\n"));
+                    return false;
+                }
+
+                // Checkout master branch
+                Platform.runLater(() -> appendToBuildLog("=== Checking out master branch ===\n"));
+                ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", "master");
+                gitCheckout.directory(repoPath.toFile());
+                gitCheckout.redirectErrorStream(true);
+
+                Process gitProcess = gitCheckout.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(gitProcess.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        final String logLine = line;
+                        Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                    }
+                }
+
+                int gitExitCode = gitProcess.waitFor();
+                if (gitExitCode != 0) {
+                    Platform.runLater(() -> appendToBuildLog("ERROR: Git checkout failed with exit code: " + gitExitCode + "\n"));
+                    return false;
+                }
+
+                // Pull latest changes
+                Platform.runLater(() -> appendToBuildLog("=== Pulling latest changes ===\n"));
+                ProcessBuilder gitPull = new ProcessBuilder("git", "pull");
+                gitPull.directory(repoPath.toFile());
+                gitPull.redirectErrorStream(true);
+
+                Process pullProcess = gitPull.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(pullProcess.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        final String logLine = line;
+                        Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                    }
+                }
+
+                int pullExitCode = pullProcess.waitFor();
+                if (pullExitCode != 0) {
+                    Platform.runLater(() -> {
+                        appendToBuildLog("WARNING: Git pull failed with exit code: " + pullExitCode + "\n");
+                        appendToBuildLog("Continuing with build...\n");
+                    });
+                }
+            }
+
+            // Build logic
+            boolean buildSuccess = false;
+            if (repository.getName().equalsIgnoreCase("opt-soa")) {
+                // Maven build for opt-soa
+                Platform.runLater(() -> appendToBuildLog("=== Running mvn clean install for opt-soa ===\n"));
+                ProcessBuilder mvnBuild;
+                String os = System.getProperty("os.name").toLowerCase();
+                if (os.contains("win")) {
+                    mvnBuild = new ProcessBuilder("cmd", "/c", "mvn", "clean", "install");
+                } else {
+                    mvnBuild = new ProcessBuilder("mvn", "clean", "install");
+                }
+                mvnBuild.directory(repoPath.toFile());
+                mvnBuild.redirectErrorStream(true);
+
+                Process mvnProcess = mvnBuild.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(mvnProcess.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        final String logLine = line;
+                        Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                    }
+                }
+
+                int mvnExitCode = mvnProcess.waitFor();
+                if (mvnExitCode == 0) {
+                    Platform.runLater(() -> appendToBuildLog("\n=== Build Completed Successfully ===\n"));
+                    buildSuccess = true;
+                } else {
+                    Platform.runLater(() -> appendToBuildLog("\nERROR: mvn clean install failed with exit code: " + mvnExitCode + "\n"));
+                    return false;
+                }
+            } else {
+                // npm build for other projects
+                Platform.runLater(() -> appendToBuildLog("=== Checking for package.json ===\n"));
+                if (!Files.exists(repoPath.resolve("package.json"))) {
+                    Platform.runLater(() -> appendToBuildLog("ERROR: package.json not found in repository\n"));
+                    return false;
+                }
+
+                Platform.runLater(() -> appendToBuildLog("=== Running npm run build ===\n"));
+                ProcessBuilder npmBuild;
+                String os = System.getProperty("os.name").toLowerCase();
+                if (os.contains("win")) {
+                    npmBuild = new ProcessBuilder("cmd", "/c", "npm", "run", "build");
+                } else {
+                    npmBuild = new ProcessBuilder("npm", "run", "build");
+                }
+
+                npmBuild.directory(repoPath.toFile());
+                npmBuild.redirectErrorStream(true);
+
+                Process npmProcess = npmBuild.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(npmProcess.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        final String logLine = line;
+                        Platform.runLater(() -> appendToBuildLog(logLine + "\n"));
+                    }
+                }
+
+                int npmExitCode = npmProcess.waitFor();
+                if (npmExitCode == 0) {
+                    Platform.runLater(() -> appendToBuildLog("\n=== Build Completed Successfully ===\n"));
+                    buildSuccess = true;
+                } else {
+                    Platform.runLater(() -> appendToBuildLog("\nERROR: npm run build failed with exit code: " + npmExitCode + "\n"));
+                    return false;
+                }
+            }
+
+            // Deploy if build was successful
+            if (buildSuccess) {
+                Platform.runLater(() -> appendToBuildLog("\n=== Starting Deployment ===\n"));
+                boolean deploySuccess = deploySingleRepository(repository, repoPath);
+                return deploySuccess;
+            }
+
+            return false;
+
+        } catch (Exception e) {
+            Platform.runLater(() -> {
+                appendToBuildLog("ERROR: " + e.getMessage() + "\n");
+            });
+            logger.error("Build process failed for " + repository.getName(), e);
+            return false;
+        }
+    }
+    
+    /**
+     * Deploy a single repository and return success status
+     * Used by batch build process
+     */
+    private boolean deploySingleRepository(Repository repository, Path repoPath) {
+        try {
+            // Get deployment path
+            String deploymentPath = deploymentPathField.getText();
+            if (deploymentPath == null || deploymentPath.trim().isEmpty()) {
+                Platform.runLater(() -> appendToBuildLog("ERROR: No deployment path specified\n"));
+                return false;
+            }
+            
+            Path deploymentDir = Path.of(deploymentPath.trim());
+            if (!Files.exists(deploymentDir) || !Files.isDirectory(deploymentDir)) {
+                Platform.runLater(() -> appendToBuildLog("ERROR: Deployment directory does not exist: " + deploymentPath + "\n"));
+                return false;
+            }
+            
+            // Special case for opt-soa: look for WAR files under SOA/target
+            Path targetDir;
+            if (repository.getName().equalsIgnoreCase("opt-soa")) {
+                targetDir = repoPath.resolve("SOA").resolve("target");
+            } else {
+                targetDir = repoPath.resolve("target");
+                if (!Files.exists(targetDir)) {
+                    targetDir = repoPath.resolve("dist");
+                }
+                if (!Files.exists(targetDir)) {
+                    targetDir = repoPath.resolve("build");
+                }
+            }
+
+            final Path finalTargetDir = targetDir;
+            
+            if (!Files.exists(finalTargetDir)) {
+                Platform.runLater(() -> appendToBuildLog("ERROR: No target/dist/build directory found in repository\n"));
+                return false;
+            }
+            
+            Platform.runLater(() -> appendToBuildLog("Looking for WAR files in: " + finalTargetDir + "\n"));
+            
+            // Find WAR files
+            List<Path> warFiles = new ArrayList<>();
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(finalTargetDir, "*.war")) {
+                for (Path warFile : stream) {
+                    warFiles.add(warFile);
+                }
+            }
+            
+            if (warFiles.isEmpty()) {
+                Platform.runLater(() -> appendToBuildLog("ERROR: No WAR files found in build output directory\n"));
+                return false;
+            }
+            
+            // Deploy each WAR file
+            for (Path warFile : warFiles) {
+                String warFileName = warFile.getFileName().toString();
+                
+                // Extract version from new WAR file name
+                String newVersion = extractVersionFromWarFile(warFileName);
+                String displayVersion = newVersion.isEmpty() ? "unknown" : newVersion;
+                
+                Platform.runLater(() -> appendToBuildLog("Preparing to deploy: " + warFileName + " (version: " + displayVersion + ")\n"));
+                
+                // Find and delete existing WAR files for this repository
+                String repoName = repository.getName();
+                deleteExistingWarFiles(deploymentDir, repoName, warFileName);
+                
+                // Deploy the new WAR file
+                Path deploymentTarget = deploymentDir.resolve(warFileName);
+                Platform.runLater(() -> appendToBuildLog("Deploying new WAR: " + warFileName + "\n"));
+                
+                Files.copy(warFile, deploymentTarget, StandardCopyOption.REPLACE_EXISTING);
+                
+                Platform.runLater(() -> appendToBuildLog("Successfully deployed: " + warFileName + " (version: " + displayVersion + ") -> " + deploymentTarget + "\n"));
+            }
+            
+            Platform.runLater(() -> {
+                appendToBuildLog("\n=== Deployment Completed Successfully ===\n");
+                appendToBuildLog("Deployed " + warFiles.size() + " WAR file(s) to: " + deploymentPath + "\n");
+            });
+            
+            return true;
+            
+        } catch (Exception e) {
+            Platform.runLater(() -> appendToBuildLog("ERROR: Deployment failed - " + e.getMessage() + "\n"));
+            logger.error("Deployment failed for " + repository.getName(), e);
+            return false;
+        }
     }
     
     /**
