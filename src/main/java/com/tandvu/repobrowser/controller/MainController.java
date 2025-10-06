@@ -1159,24 +1159,38 @@ public class MainController implements Initializable {
                         return null;
                     }
                     
-                    // Special case for opt-soa: look for WAR files under SOA/target
-                    Path targetDir;
+                    // Look for WAR files in the build output directory
+                    Path targetDir = null;
+                    // Special-case opt-soa: WARs are under opt-soa/SOA/target
                     if (repository.getName().equalsIgnoreCase("opt-soa")) {
                         targetDir = repoPath.resolve("SOA").resolve("target");
-                    } else {
-                        targetDir = repoPath.resolve("target");
-                        if (!Files.exists(targetDir)) {
-                            // Try dist directory for some projects
-                            targetDir = repoPath.resolve("dist");
-                        }
-                        if (!Files.exists(targetDir)) {
-                            // Try build directory
-                            targetDir = repoPath.resolve("build");
+                        appendToBuildLog("[DIAG] opt-soa: checking SOA/target -> " + targetDir + "\n");
+                    }
+                    // Common locations fallback
+                    if (targetDir == null || !Files.exists(targetDir)) {
+                        Path p = repoPath.resolve("target");
+                        appendToBuildLog("[DIAG] checking target -> " + p + "\n");
+                        if (Files.exists(p)) {
+                            targetDir = p;
                         }
                     }
-
+                    if (targetDir == null || !Files.exists(targetDir)) {
+                        Path p = repoPath.resolve("dist");
+                        appendToBuildLog("[DIAG] checking dist -> " + p + "\n");
+                        if (Files.exists(p)) {
+                            targetDir = p;
+                        }
+                    }
+                    if (targetDir == null || !Files.exists(targetDir)) {
+                        Path p = repoPath.resolve("build");
+                        appendToBuildLog("[DIAG] checking build -> " + p + "\n");
+                        if (Files.exists(p)) {
+                            targetDir = p;
+                        }
+                    }
+                    
                     final Path finalTargetDir = targetDir;
-
+                    
                     if (!Files.exists(finalTargetDir)) {
                         Platform.runLater(() -> {
                             appendToBuildLog("ERROR: No target/dist/build directory found in repository\n");
