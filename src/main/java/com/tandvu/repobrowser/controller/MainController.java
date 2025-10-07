@@ -830,13 +830,8 @@ public class MainController implements Initializable {
             return;
         }
 
-        if (selectedRepos.size() > 1) {
-            showAlert("Multiple Selection", "Please select only one repository to build.");
-            return;
-        }
-
-        Repository selectedRepo = selectedRepos.get(0);
-        startBuildProcess(selectedRepo);
+        // Use batch build for one or more selected repositories to support sequential builds
+        startBatchBuild(selectedRepos);
     }
 
     @FXML
@@ -1126,6 +1121,135 @@ public class MainController implements Initializable {
         Thread buildThread = new Thread(buildTask);
         buildThread.setDaemon(true);
         buildThread.start();
+    }
+
+    /**
+     * Start a sequential batch build for multiple repositories.
+     */
+    private void startBatchBuild(List<Repository> repos) {
+        // Hide table and show build log once for the batch
+        if (buildLogContainer != null) buildLogContainer.setVisible(true);
+        repoTable.setVisible(false);
+        buildMasterButton.setDisable(true);
+
+        Task<Void> batchTask = new Task<>() {
+            @Override
+            protected Void call() throws Exception {
+                for (Repository r : repos) {
+                    Platform.runLater(() -> appendToBuildLog("\n=== Batch: Building " + r.getName() + " ===\n"));
+                    boolean success = buildRepository(r);
+                    Platform.runLater(() -> appendToBuildLog("=== Batch: " + r.getName() + " " + (success ? "SUCCEEDED" : "FAILED") + " ===\n"));
+                    // small pause between builds
+                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                }
+
+                Platform.runLater(() -> {
+                    buildStatusLabel.setText("Batch build completed");
+                    buildMasterButton.setDisable(false);
+                    repoTable.setVisible(true);
+                    buildLogContainer.setVisible(false);
+                });
+                return null;
+            }
+        };
+
+        Thread t = new Thread(batchTask);
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * Build a single repository synchronously on the calling thread and return success.
+     * This method reuses the existing startBuildProcess logic but extracts the core
+     * steps so they can be called sequentially for batch builds.
+     */
+    private boolean buildRepository(Repository repository) {
+        try {
+            // replicate the setup used in startBuildProcess to determine repoPath
+            String basePath = basePathField.getText().trim();
+            Path repoPath;
+            if (repository.getName().equalsIgnoreCase("opt-soa")) {
+                String soaPath = soaPathLabel.getText().trim();
+                repoPath = Paths.get(soaPath, "opt-soa");
+            } else {
+                repoPath = Paths.get(basePath, repository.getName());
+            }
+            if (!Files.exists(repoPath)) {
+                Platform.runLater(() -> appendToBuildLog("ERROR: Repository path does not exist: " + repoPath + "\n"));
+                return false;
+            }
+
+            // We'll run the same steps as in startBuildProcess but synchronously here.
+            // Step 1: Git (skip for opt-soa)
+            if (!repository.getName().equalsIgnoreCase("opt-soa")) {
+                appendToBuildLog("=== Checking Git Repository ===\n");
+                if (!Files.exists(repoPath.resolve(".git"))) {
+                    appendToBuildLog("ERROR: Not a git repository: " + repoPath + "\n");
+                    return false;
+                }
+                // checkout and pull
+                ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", "master");
+                gitCheckout.directory(repoPath.toFile());
+                gitCheckout.redirectErrorStream(true);
+                Process gitProcess = gitCheckout.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(gitProcess.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) appendToBuildLog(line + "\n");
+                }
+                int gitExit = gitProcess.waitFor();
+                if (gitExit != 0) { appendToBuildLog("ERROR: Git checkout failed: " + gitExit + "\n"); return false; }
+
+                ProcessBuilder gitPull = new ProcessBuilder("git", "pull");
+                gitPull.directory(repoPath.toFile());
+                gitPull.redirectErrorStream(true);
+                Process pull = gitPull.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(pull.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) appendToBuildLog(line + "\n");
+                }
+            }
+
+            // Step 2: Build (mvn for opt-soa, npm for others)
+            if (repository.getName().equalsIgnoreCase("opt-soa")) {
+                appendToBuildLog("=== Running mvn clean install for opt-soa ===\n");
+                ProcessBuilder mvnBuild = System.getProperty("os.name").toLowerCase().contains("win")
+                        ? new ProcessBuilder("cmd", "/c", "mvn", "clean", "install")
+                        : new ProcessBuilder("mvn", "clean", "install");
+                mvnBuild.directory(repoPath.toFile());
+                mvnBuild.redirectErrorStream(true);
+                Process mvn = mvnBuild.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(mvn.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) appendToBuildLog(line + "\n");
+                }
+                int code = mvn.waitFor();
+                if (code != 0) { appendToBuildLog("ERROR: mvn failed with code " + code + "\n"); return false; }
+            } else {
+                // npm build
+                appendToBuildLog("=== Running npm run build ===\n");
+                ProcessBuilder npmBuild = System.getProperty("os.name").toLowerCase().contains("win")
+                        ? new ProcessBuilder("cmd", "/c", "npm", "run", "build")
+                        : new ProcessBuilder("npm", "run", "build");
+                npmBuild.directory(repoPath.toFile());
+                npmBuild.redirectErrorStream(true);
+                Process npm = npmBuild.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(npm.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) appendToBuildLog(line + "\n");
+                }
+                int code = npm.waitFor();
+                if (code != 0) { appendToBuildLog("ERROR: npm build failed with code " + code + "\n"); return false; }
+            }
+
+            // Start deployment for this repo synchronously
+            Task<Void> deployTask = createDeploymentTask(repository, repoPath);
+            deployTask.run(); // run in this thread synchronously
+            return true;
+        } catch (Exception e) {
+            appendToBuildLog("ERROR: Batch build exception: " + e.getMessage() + "\n");
+            logger.error("Batch build failed", e);
+            return false;
+        }
     }
     
     /**
@@ -1578,6 +1702,8 @@ public class MainController implements Initializable {
                 if (text != null) {
                     filterField.setText(text);
                     logger.info("Pasted {} characters from clipboard into filter", text.length());
+                    // After pasting, select rows that have a targeted version set by the filter
+                    Platform.runLater(() -> selectRowsWithTargetedVersion());
                 }
             } else {
                 showAlert("Clipboard", "Clipboard has no text to paste.");
@@ -1595,6 +1721,33 @@ public class MainController implements Initializable {
     private void handleClearFilter() {
         filterField.clear();
         logger.info("Cleared filter text");
+    }
+
+    /**
+     * Select repositories which have a targeted version set.
+     * This is called after pasting into the filter TextArea to automatically
+     * mark matching repositories for batch operations.
+     */
+    private void selectRowsWithTargetedVersion() {
+        if (filteredRepositories == null || filteredRepositories.isEmpty()) return;
+
+        int selectedCount = 0;
+        for (Repository repo : filteredRepositories) {
+            String targeted = repo.getTargetedVersion();
+            if (targeted != null && !targeted.isBlank()) {
+                if (!repo.isIgnore()) {
+                    repo.setSelected(true);
+                    selectedCount++;
+                }
+            } else {
+                // do not change selection for repos without targeted version
+            }
+        }
+        repoTable.refresh();
+        updateHeaderCheckboxState();
+        updateBuildButtonState();
+        updateStatusLabel();
+        logger.info("Auto-selected {} repositories based on targeted versions", selectedCount);
     }
 
     /**
