@@ -74,12 +74,24 @@ public class MainController implements Initializable {
      * Update filteredRepositories based on filter and hideIgnored flag
      */
     private void updateFilteredRepositories() {
-        filteredRepositories.clear();
-        if (hideIgnored) {
-            filteredRepositories.addAll(repositories.stream().filter(r -> !r.isIgnore()).toList());
+        // Preserve any active text filter when updating hidden/ignored state.
+        String currentFilter = (filterField != null) ? filterField.getText() : null;
+        if (currentFilter != null && !currentFilter.trim().isEmpty()) {
+            // Re-apply the filter then enforce hideIgnored on the filtered result
+            filterRepositories(currentFilter);
+            if (hideIgnored) {
+                filteredRepositories.removeIf(Repository::isIgnore);
+            }
         } else {
-            filteredRepositories.addAll(repositories);
+            // No active text filter — show either all or non-ignored repositories
+            filteredRepositories.clear();
+            if (hideIgnored) {
+                filteredRepositories.addAll(repositories.stream().filter(r -> !r.isIgnore()).toList());
+            } else {
+                filteredRepositories.addAll(repositories);
+            }
         }
+
         repoTable.refresh();
         updateHeaderCheckboxState();
         updateStatusLabel();
@@ -427,8 +439,11 @@ public class MainController implements Initializable {
     
     private void setupFilter() {
         filterField.textProperty().addListener((observable, oldValue, newValue) -> {
+            // Apply the text filter only; updateFilteredRepositories will re-apply hideIgnored when needed
             filterRepositories(newValue);
-            updateFilteredRepositories();
+            // Ensure header/status reflect the new filtered set
+            updateHeaderCheckboxState();
+            updateStatusLabel();
         });
     }
     
