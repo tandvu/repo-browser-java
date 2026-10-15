@@ -44,6 +44,14 @@
                      <Label fx:id="soaPathLabel" text="C:/AMPT_DEV/TRMC_MODULE" styleClass="path-display" HBox.hgrow="ALWAYS" />
                   </children>
                </HBox>
+
+               <!-- Spring SOA deploy path (opt-soa-exec.jar) -->
+               <HBox alignment="CENTER_LEFT" spacing="8.0">
+                  <children>
+                     <Label text="SOA Deploy Path:" minWidth="120.0" />
+                     <Label fx:id="soaDeployPathLabel" text="C:/OPT/spring-soa" styleClass="path-display" HBox.hgrow="ALWAYS" />
+                  </children>
+               </HBox>
             </children>
          </VBox>
 
@@ -82,6 +90,7 @@
                   <Button fx:id="buildMasterButton" text="Build Master &amp; Deploy" onAction="#handleBuildMaster" prefWidth="160.0" />
                   <Button fx:id="refreshButton" text="Refresh" onAction="#handleRefresh" prefWidth="80.0" />
                   <Button fx:id="toggleIgnoredButton" text="Hide Ignored Repos" onAction="#handleToggleIgnored" prefWidth="170.0" />
+                  <Button fx:id="openLogButton" text="Open Log File" onAction="#handleOpenLogFile" prefWidth="110.0" />
                </children>
             </HBox>
             
@@ -114,6 +123,7 @@
                            <children>
                               <Label fx:id="buildStatusLabel" text="Building..." style="-fx-font-weight: bold;" />
                               <Region HBox.hgrow="ALWAYS" />
+                              <Button text="Open Log File" onAction="#handleOpenLogFile" />
                               <Button fx:id="backToTableButton" text="Back to Table" onAction="#handleBackToTable" />
                            </children>
                         </HBox>
@@ -139,7 +149,7 @@
             <children>
                <Label fx:id="statusLabel" text="Ready" />
                <Region HBox.hgrow="ALWAYS" />
-               <ProgressBar fx:id="progressBar" prefWidth="200.0" visible="false" />
+               <ProgressBar fx:id="progressBar" prefWidth="280.0" prefHeight="18.0" visible="false" progress="-1.0" />
             </children>
          </HBox>
          

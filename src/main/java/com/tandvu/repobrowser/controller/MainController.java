@@ -43,10 +43,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.ResourceBundle;
 import java.util.prefs.Preferences;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.jar.JarFile;
+import java.util.jar.Manifest;
 import java.util.stream.Collectors;
 
 /**
@@ -98,22 +102,52 @@ public class MainController implements Initializable {
     }
     
     private static final Logger logger = LoggerFactory.getLogger(MainController.class);
+    /** Build/deploy console output, mirrored to the log file (see logback.xml). */
+    private static final Logger buildFileLogger = LoggerFactory.getLogger("BUILD");
+    /** Matches the FILE appender in logback.xml; relative to the working directory (start.bat cd's to the app dir). */
+    private static final Path LOG_FILE = Paths.get("logs", "repo-browser.log");
     
     // Preferences constants
     private static final String PREF_REPOSITORY_PATH = "repository_path";
     private static final String PREF_DEPLOYMENT_PATH = "deployment_path";
     private static final String DEFAULT_REPOSITORY_PATH = "C:\\AMPT";
     private static final String DEFAULT_DEPLOYMENT_PATH = "C:\\OPT";
+    private static final String DEFAULT_SPRING_SOA_DEPLOY_PATH = "C:\\OPT\\spring-soa";
+    private static final String OPT_SOA_EXEC_JAR = "opt-soa-exec.jar";
+    private static final String DEFAULT_GIT_BUILD_BRANCH = "master";
+    private static final String WEBMAP_GIT_BUILD_BRANCH = "feature/ampt-arcgis4";
     
     // Preferences instance
     private final Preferences preferences = Preferences.userNodeForPackage(MainController.class);
     private static final String PREF_IGNORE_MAP = "ignore_map";
+    /** Not deployed via JBoss WAR in this tool — ignored unless the user saved a preference. */
+    private static final Set<String> DEFAULT_IGNORED_REPOS = Set.of(
+        "opt-utilities",
+        "onr-transit"
+    );
+
+    /** Version is the last numeric segment: ampt-common-map-interface-4.20.0.war */
+    private static final Pattern AMPT_WAR_FILE_PATTERN = Pattern.compile(
+        "^ampt-(.+)-(\\d+(?:\\.\\d+)*(?:-[a-zA-Z0-9]+)?)\\.war$", Pattern.CASE_INSENSITIVE);
+
+    /** opt-soa-5.20.1.war or opt-soa-5.20.1-exec.war (file or exploded directory under JBoss) */
+    private static final Pattern OPT_SOA_DEPLOYMENT_PATTERN = Pattern.compile(
+        "^opt-soa-(\\d+(?:\\.\\d+)*(?:-[a-zA-Z0-9]+)?)(?:-exec)?\\.war$", Pattern.CASE_INSENSITIVE);
+
+    /** webmap2-1.7.0.war (repo folder name is {@code webmap}) */
+    private static final Pattern WEBMAP_DEPLOYMENT_WAR_PATTERN = Pattern.compile(
+        "^webmap2-(\\d+(?:\\.\\d+)*(?:-[a-zA-Z0-9]+)?)\\.war$", Pattern.CASE_INSENSITIVE);
+
+    /** Version segment at end of a WAR file name (handles webmap2-1.7.0, ampt-zones-1.7.0, etc.) */
+    private static final Pattern WAR_FILE_VERSION_PATTERN = Pattern.compile(
+        "^(?:.+)-(\\d+(?:\\.\\d+)*(?:-[a-zA-Z0-9]+)?)(?:-exec)?\\.war$", Pattern.CASE_INSENSITIVE);
     
     @FXML private TextField basePathField;
     @FXML private Button browseButton;
     @FXML private TextField deploymentPathField;
     @FXML private Button browseDeploymentButton;
     @FXML private Label soaPathLabel;
+    @FXML private Label soaDeployPathLabel;
     @FXML private TextArea filterField;
     @FXML private TableView<Repository> repoTable;
     @FXML private TableColumn<Repository, Boolean> selectedColumn;
@@ -142,6 +176,8 @@ public class MainController implements Initializable {
     
     private final ObservableList<Repository> repositories = FXCollections.observableArrayList();
     private final ObservableList<Repository> filteredRepositories = FXCollections.observableArrayList();
+    /** True while a multi-repo batch build is running (suppresses per-repo "successful" header text). */
+    private volatile boolean batchBuildInProgress = false;
     private final RepositoryScanner repositoryScanner = new RepositoryScanner();
     private final Map<String, String> targetedVersions = new HashMap<>();
     
@@ -167,7 +203,7 @@ public class MainController implements Initializable {
         logger.info("Initializing MainController");
 
         // Restore hideIgnored state from preferences
-        hideIgnored = preferences.getBoolean(PREF_HIDE_IGNORED, false);
+        hideIgnored = preferences.getBoolean(PREF_HIDE_IGNORED, true);
         if (toggleIgnoredButton != null) {
             toggleIgnoredButton.setText(hideIgnored ? "Show Ignored Repos" : "Hide Ignored Repos");
         }
@@ -197,7 +233,7 @@ public class MainController implements Initializable {
 
         // Set initial status
         statusLabel.setText("Ready - Select a repository path to browse");
-        progressBar.setVisible(false);
+        hideOperationProgress();
 
         // Perform initial scan if default path exists
         performInitialScan();
@@ -325,20 +361,7 @@ public class MainController implements Initializable {
                     setStyle("");
                     setDisable(false);
                 } else {
-                    // Highlight if versions mismatch and ignore is not checked
-                    boolean mismatch = false;
-                    if (!repo.isIgnore()) {
-                        String repoVer = repo.getRepoVersion();
-                        String depVer = repo.getDeploymentVersion();
-                        if (repoVer != null && !repoVer.isBlank() && depVer != null && !depVer.isBlank() && !repoVer.equals(depVer)) {
-                            mismatch = true;
-                        }
-                        // Also flag if repoVer is present and depVer is empty
-                        if (repoVer != null && !repoVer.isBlank() && (depVer == null || depVer.isBlank())) {
-                            mismatch = true;
-                        }
-                    }
-                    setStyle(mismatch ? "-fx-background-color: #ffe0e0;" : "");
+                    setStyle(shouldHighlightRepositoryRow(repo) ? "-fx-background-color: #ffe0e0;" : "");
                     // Listen for changes to ignore property
                     repo.ignoreProperty().addListener((obs, wasIgnored, isIgnored) -> {
                         if (isIgnored) {
@@ -582,6 +605,7 @@ public class MainController implements Initializable {
         
         updateStatusLabel();
         updateHeaderCheckboxState();
+        repoTable.refresh();
     }
     
     @FXML
@@ -634,9 +658,7 @@ public class MainController implements Initializable {
     private void scanRepositories(Path basePath) {
         logger.info("Scanning repositories in: {}", basePath);
 
-        // Show progress
-        progressBar.setVisible(true);
-        statusLabel.setText("Scanning repositories...");
+        showOperationProgress("Scanning repositories...");
 
         // Clear existing repositories
     repositories.clear();
@@ -657,12 +679,15 @@ public class MainController implements Initializable {
             }
             repositories.addAll(foundRepos);
 
-            // Add opt-soa repository from SOA Path if it exists
-            addSoaRepository();
+            // Ensure opt-soa row reflects SOA Path/opt-soa (same folder used for builds)
+            syncOptSoaRepository();
 
-            // Restore ignore state for each repo
+            // Restore ignore state (library/quarkus repos stay ignored by default)
             for (Repository repo : repositories) {
-                if (ignoreMap.containsKey(repo.getName())) {
+                String repoKey = repo.getName().toLowerCase();
+                if (DEFAULT_IGNORED_REPOS.contains(repoKey)) {
+                    repo.setIgnore(true);
+                } else if (ignoreMap.containsKey(repo.getName())) {
                     repo.setIgnore(ignoreMap.get(repo.getName()));
                 }
             }
@@ -682,9 +707,14 @@ public class MainController implements Initializable {
                 });
                 repo.ignoreProperty().addListener((observable, oldValue, newValue) -> {
                     saveIgnoreMap();
+                    if (hideIgnored) {
+                        updateFilteredRepositories();
+                    }
                     Platform.runLater(() -> repoTable.refresh());
                 });
             });
+
+            saveIgnoreMap();
 
             logger.info("Found {} repositories", repositories.size());
             updateStatusLabel();
@@ -704,7 +734,84 @@ public class MainController implements Initializable {
             showAlert("Error", "Failed to scan repositories: " + e.getMessage());
             statusLabel.setText("Error occurred during scanning");
         } finally {
+            hideOperationProgress();
+            updateStatusLabel();
+        }
+    }
+
+    private void showOperationProgress(String statusMessage) {
+        Runnable updateUi = () -> {
+            progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+            progressBar.setVisible(true);
+            if (statusMessage != null && !statusMessage.isBlank()) {
+                statusLabel.setText(statusMessage);
+            }
+        };
+        if (Platform.isFxApplicationThread()) {
+            updateUi.run();
+        } else {
+            Platform.runLater(updateUi);
+        }
+    }
+
+    private void setBuildPhaseStatus(String message) {
+        Runnable update = () -> buildStatusLabel.setText(message);
+        if (Platform.isFxApplicationThread()) {
+            update.run();
+        } else {
+            Platform.runLater(update);
+        }
+    }
+
+    /** Bold build header, bottom status, and progress bar while batch build runs. */
+    private void setActiveBatchRepository(String repoName, String phase) {
+        String message = phase + " " + repoName + "...";
+        Runnable update = () -> {
+            buildStatusLabel.setText(message);
+            statusLabel.setText(message);
+            progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+            progressBar.setVisible(true);
+        };
+        if (Platform.isFxApplicationThread()) {
+            update.run();
+        } else {
+            Platform.runLater(update);
+        }
+    }
+
+    private void runOnFxThreadAndWait(Runnable action) {
+        if (Platform.isFxApplicationThread()) {
+            action.run();
+            return;
+        }
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                action.run();
+            } finally {
+                latch.countDown();
+            }
+        });
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void setActiveBatchRepositorySync(String repoName, String phase) {
+        runOnFxThreadAndWait(() -> setActiveBatchRepository(repoName, phase));
+    }
+
+    private void hideOperationProgress() {
+        Runnable updateUi = () -> {
+            progressBar.setProgress(0);
             progressBar.setVisible(false);
+        };
+        if (Platform.isFxApplicationThread()) {
+            updateUi.run();
+        } else {
+            Platform.runLater(updateUi);
         }
     }
 
@@ -717,101 +824,179 @@ public class MainController implements Initializable {
     }
 
     /**
-     * Add opt-soa repository from the SOA Path if the directory exists
+     * Maven build directory for opt-soa: {@code <SOA Path>/opt-soa}.
      */
-    private void addSoaRepository() {
-        String soaPath = soaPathLabel.getText();
-        logger.info("Attempting to add opt-soa from SOA Path: '{}'", soaPath);
-
-        if (soaPath != null && !soaPath.trim().isEmpty()) {
-            // Normalize path separators for Windows
-            String normalizedPath = soaPath.trim().replace('/', File.separatorChar).replace('\\', File.separatorChar);
-            File soaDir = new File(normalizedPath);
-
-            logger.info("Checking if SOA directory exists: '{}' -> exists: {}, isDirectory: {}", 
-                normalizedPath, soaDir.exists(), soaDir.isDirectory());
-
-            if (soaDir.exists() && soaDir.isDirectory()) {
-                // Check if opt-soa already exists in the list (avoid duplicates)
-                boolean alreadyExists = repositories.stream()
-                    .anyMatch(repo -> "opt-soa".equalsIgnoreCase(repo.getName()));
-
-                logger.info("opt-soa already exists in repository list: {}", alreadyExists);
-
-                if (!alreadyExists) {
-                    Repository soaRepo = new Repository("opt-soa", normalizedPath);
-
-                    // Try to detect version from the SOA directory with custom logic
-                    try {
-                        String version = detectSoaRepositoryVersion(soaDir.toPath());
-                        logger.info("Detected version for opt-soa: '{}'", version);
-                        soaRepo.setRepoVersion(version);
-                    } catch (Exception e) {
-                        logger.warn("Could not detect version for opt-soa: {}", e.getMessage());
-                    }
-
-                    repositories.add(soaRepo);
-                    logger.info("Successfully added opt-soa repository from SOA Path: {}", normalizedPath);
-                } else {
-                    logger.info("opt-soa repository already exists, skipping SOA Path addition");
-                }
-            } else {
-                logger.warn("SOA Path does not exist or is not a directory: {} (normalized: {})", soaPath, normalizedPath);
-            }
-        } else {
-            logger.warn("SOA Path is null or empty: '{}'", soaPath);
+    /**
+     * WAR filename prefix in JBoss (repo folder {@code webmap} publishes {@code webmap2-<version>.war}).
+     */
+    private String getWarArtifactPrefix(String repoName) {
+        if (repoName != null && "webmap".equalsIgnoreCase(repoName)) {
+            return "webmap2";
         }
+        return repoName;
     }
 
     /**
-     * Detect version for opt-soa repository which may have a different structure
+     * npm script that produces the deployable WAR. Prefers {@code build:war} (e.g. webmap, whose plain
+     * {@code build} only emits dist/), otherwise {@code build}.
      */
-    private String detectSoaRepositoryVersion(Path soaPath) {
-        // Try looking in subdirectories for version files
+    private String resolveNpmBuildScript(Path repoPath) {
+        Path packageJson = repoPath.resolve("package.json");
+        if (!Files.isRegularFile(packageJson)) {
+            return "build";
+        }
         try {
-            java.nio.file.DirectoryStream<java.nio.file.Path> stream = 
-                java.nio.file.Files.newDirectoryStream(soaPath, java.nio.file.Files::isDirectory);
-            for (java.nio.file.Path subDir : stream) {
-                logger.debug("Checking SOA subdirectory: {}", subDir.getFileName());
-                try {
-                    String version = repositoryScanner.detectRepositoryVersion(subDir);
-                    if (version != null && !version.trim().isEmpty()) {
-                        logger.info("Found SOA version in subdirectory {}: {}", subDir.getFileName(), version);
-                        return version;
-                    }
-                } catch (Exception e) {
-                    logger.debug("Version detection failed in subdirectory {}: {}", subDir.getFileName(), e.getMessage());
-                }
+            com.fasterxml.jackson.databind.JsonNode root =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(Files.readString(packageJson));
+            com.fasterxml.jackson.databind.JsonNode scripts = root.get("scripts");
+            if (scripts != null && scripts.has("build:war")) {
+                return "build:war";
             }
-            stream.close();
-        } catch (Exception e) {
-            logger.debug("Error scanning SOA subdirectories: {}", e.getMessage());
+        } catch (IOException e) {
+            logger.warn("Could not read {} to pick npm build script: {}", packageJson, e.getMessage());
+        }
+        return "build";
+    }
+
+    /**
+     * Git branch used before npm/Maven build. Most repos use master; webmap uses a release feature branch.
+     */
+    private String resolveGitBuildBranch(Repository repository) {
+        if (repository != null && "webmap".equalsIgnoreCase(repository.getName())) {
+            return WEBMAP_GIT_BUILD_BRANCH;
+        }
+        return DEFAULT_GIT_BUILD_BRANCH;
+    }
+
+    /**
+     * Checkout the build branch and pull latest. Required for opt-soa so master matches release targets.
+     */
+    private boolean runGitCheckoutAndPull(Path repoPath, Repository repository) throws IOException, InterruptedException {
+        appendToBuildLog("=== Checking Git Repository ===\n");
+        if (!Files.exists(repoPath.resolve(".git"))) {
+            appendToBuildLog("ERROR: Not a git repository: " + repoPath + "\n");
+            return false;
+        }
+        String buildBranch = resolveGitBuildBranch(repository);
+        appendToBuildLog("=== Checking out branch: " + buildBranch + " ===\n");
+        ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", buildBranch);
+        gitCheckout.directory(repoPath.toFile());
+        gitCheckout.redirectErrorStream(true);
+        Process gitProcess = gitCheckout.start();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(gitProcess.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                appendToBuildLog(line + "\n");
+            }
+        }
+        int gitExit = gitProcess.waitFor();
+        if (gitExit != 0) {
+            appendToBuildLog("ERROR: Git checkout failed: " + gitExit + "\n");
+            return false;
         }
 
-        // Try looking for specific SOA version patterns in files
+        appendToBuildLog("=== Pulling latest changes ===\n");
+        ProcessBuilder gitPull = new ProcessBuilder("git", "pull");
+        gitPull.directory(repoPath.toFile());
+        gitPull.redirectErrorStream(true);
+        Process pull = gitPull.start();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(pull.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                appendToBuildLog(line + "\n");
+            }
+        }
+        int pullExit = pull.waitFor();
+        if (pullExit != 0) {
+            appendToBuildLog("WARNING: Git pull failed with exit code: " + pullExit + "\n");
+            appendToBuildLog("Continuing with build...\n");
+        }
+        return true;
+    }
+
+    private Path getOptSoaProjectPath() {
+        String soaPath = soaPathLabel.getText();
+        if (soaPath == null || soaPath.isBlank()) {
+            return null;
+        }
+        String normalizedPath = soaPath.trim()
+            .replace('/', File.separatorChar)
+            .replace('\\', File.separatorChar);
+        return Paths.get(normalizedPath, "opt-soa");
+    }
+
+    /**
+     * Keep a single opt-soa row aligned with the project folder used for build/deploy.
+     * Repo version comes from that tree; deployment version still comes from Deployment Path.
+     */
+    private void syncOptSoaRepository() {
+        Path optSoaProjectPath = getOptSoaProjectPath();
+        if (optSoaProjectPath == null || !Files.isDirectory(optSoaProjectPath)) {
+            logger.warn("opt-soa project path does not exist: {}", optSoaProjectPath);
+            return;
+        }
+
+        Repository optSoa = repositories.stream()
+            .filter(repo -> "opt-soa".equalsIgnoreCase(repo.getName()))
+            .findFirst()
+            .orElse(null);
+
+        if (optSoa == null) {
+            optSoa = new Repository("opt-soa", optSoaProjectPath.toString());
+            repositories.add(optSoa);
+            logger.info("Added opt-soa from project path: {}", optSoaProjectPath);
+        } else {
+            String previousPath = optSoa.getPath();
+            optSoa.setPath(optSoaProjectPath.toString());
+            if (!optSoaProjectPath.toString().equals(previousPath)) {
+                logger.info("Updated opt-soa path from '{}' to '{}'", previousPath, optSoaProjectPath);
+            }
+        }
+
+        String version = detectOptSoaRepoVersion(optSoaProjectPath);
+        optSoa.setRepoVersion(version);
+        logger.info("opt-soa repo version from {}: '{}'", optSoaProjectPath, version);
+    }
+
+    /**
+     * Detect source version for opt-soa from the same folders the build uses.
+     */
+    private String detectOptSoaRepoVersion(Path optSoaProjectPath) {
+        // WAR is produced under SOA/target — prefer that module's version for deploy comparison
+        Path soaModulePath = optSoaProjectPath.resolve("SOA");
+        if (Files.isDirectory(soaModulePath)) {
+            String version = repositoryScanner.detectRepositoryVersion(soaModulePath);
+            if (version != null && !version.isBlank()) {
+                return version;
+            }
+        }
+
+        String version = repositoryScanner.detectRepositoryVersion(optSoaProjectPath);
+        if (version != null && !version.isBlank()) {
+            return version;
+        }
+
+        return readVersionFromMetadataFiles(optSoaProjectPath);
+    }
+
+    private String readVersionFromMetadataFiles(Path projectPath) {
         try {
-            // Look for version.properties, version.txt, or similar files
             String[] versionFiles = {"version.properties", "version.txt", "VERSION", ".version"};
             for (String fileName : versionFiles) {
-                java.nio.file.Path versionFile = soaPath.resolve(fileName);
-                if (java.nio.file.Files.exists(versionFile)) {
-                    String content = java.nio.file.Files.readString(versionFile);
-                    // Look for version patterns
-                    java.util.regex.Matcher matcher = java.util.regex.Pattern
+                Path versionFile = projectPath.resolve(fileName);
+                if (Files.exists(versionFile)) {
+                    String content = Files.readString(versionFile);
+                    Matcher matcher = Pattern
                         .compile("(?i)(?:version[=:\\s]+)([0-9]+(?:\\.[0-9]+)*(?:-[a-z0-9]+)?)")
                         .matcher(content);
                     if (matcher.find()) {
-                        String version = matcher.group(1);
-                        logger.info("Found SOA version in {}: {}", fileName, version);
-                        return version;
+                        return matcher.group(1);
                     }
                 }
             }
         } catch (Exception e) {
-            logger.debug("Error reading SOA version files: {}", e.getMessage());
+            logger.debug("Error reading version metadata under {}: {}", projectPath, e.getMessage());
         }
-        
-        logger.info("Could not detect version for opt-soa repository");
         return "";
     }
     
@@ -847,6 +1032,28 @@ public class MainController implements Initializable {
 
         // Use batch build for one or more selected repositories to support sequential builds
         startBatchBuild(selectedRepos);
+    }
+
+    /**
+     * Open logs/repo-browser.log in the system default viewer.
+     */
+    @FXML
+    private void handleOpenLogFile() {
+        Path logFile = LOG_FILE.toAbsolutePath();
+        if (!Files.isRegularFile(logFile)) {
+            showAlert("Log file not found", "No log file at:\n" + logFile);
+            return;
+        }
+        try {
+            if (Desktop.isDesktopSupported()) {
+                Desktop.getDesktop().open(logFile.toFile());
+            } else {
+                showAlert("Unsupported", "Opening files is not supported on this platform.\n" + logFile);
+            }
+        } catch (Exception e) {
+            logger.error("Failed to open log file {}", logFile, e);
+            showAlert("Error", "Failed to open log file:\n" + logFile + "\n\n" + e.getMessage());
+        }
     }
 
     @FXML
@@ -916,8 +1123,8 @@ public class MainController implements Initializable {
                     final Repository finalRepository = repository;
                     final Path finalRepoPath = repoPath;
 
-                    if (!finalRepository.getName().equalsIgnoreCase("opt-soa")) {
-                        // Step 1: Check if it's a git repository
+                    {
+                        // Step 1: Check if it's a git repository (including opt-soa under SOA Path)
                         appendToBuildLog("=== Checking Git Repository ===\n");
                         if (!Files.exists(finalRepoPath.resolve(".git"))) {
                             appendToBuildLog("ERROR: Not a git repository: " + finalRepoPath + "\n");
@@ -928,9 +1135,9 @@ public class MainController implements Initializable {
                             return null;
                         }
 
-                        // Step 2: Checkout master branch
-                        appendToBuildLog("=== Checking out master branch ===\n");
-                        ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", "master");
+                        String buildBranch = resolveGitBuildBranch(finalRepository);
+                        appendToBuildLog("=== Checking out branch: " + buildBranch + " ===\n");
+                        ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", buildBranch);
                         gitCheckout.directory(finalRepoPath.toFile());
                         gitCheckout.redirectErrorStream(true);
 
@@ -1057,18 +1264,19 @@ public class MainController implements Initializable {
                             return null;
                         }
 
-                        // Step 5: Run npm run build
-                        appendToBuildLog("=== Running npm run build ===\n");
+                        // Step 5: Run npm build script (build:war when the repo defines it)
+                        String npmScript = resolveNpmBuildScript(finalRepoPath);
+                        appendToBuildLog("=== Running npm run " + npmScript + " ===\n");
 
                         // Create npm command for Windows compatibility
                         ProcessBuilder npmBuild;
                         String os = System.getProperty("os.name").toLowerCase();
                         if (os.contains("win")) {
                             // On Windows, use cmd to run npm
-                            npmBuild = new ProcessBuilder("cmd", "/c", "npm", "run", "build");
+                            npmBuild = new ProcessBuilder("cmd", "/c", "npm", "run", npmScript);
                         } else {
                             // On Unix-like systems
-                            npmBuild = new ProcessBuilder("npm", "run", "build");
+                            npmBuild = new ProcessBuilder("npm", "run", npmScript);
                         }
 
                         npmBuild.directory(finalRepoPath.toFile());
@@ -1146,24 +1354,39 @@ public class MainController implements Initializable {
         if (buildLogContainer != null) buildLogContainer.setVisible(true);
         repoTable.setVisible(false);
         buildMasterButton.setDisable(true);
+        refreshButton.setDisable(true);
+        batchBuildInProgress = true;
+        if (!repos.isEmpty()) {
+            setActiveBatchRepository(repos.get(0).getName(), "Building");
+        }
 
         Task<Void> batchTask = new Task<>() {
             @Override
             protected Void call() throws Exception {
-                for (Repository r : repos) {
-                    Platform.runLater(() -> appendToBuildLog("\n=== Batch: Building " + r.getName() + " ===\n"));
-                    boolean success = buildRepository(r);
-                    Platform.runLater(() -> appendToBuildLog("=== Batch: " + r.getName() + " " + (success ? "SUCCEEDED" : "FAILED") + " ===\n"));
-                    // small pause between builds
-                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                try {
+                    for (Repository r : repos) {
+                        runOnFxThreadAndWait(() ->
+                            appendToBuildLog("\n=== Batch: Building " + r.getName() + " ===\n"));
+                        setActiveBatchRepositorySync(r.getName(), "Building");
+                        boolean success = buildRepository(r);
+                        Platform.runLater(() -> appendToBuildLog("=== Batch: " + r.getName() + " " + (success ? "SUCCEEDED" : "FAILED") + " ===\n"));
+                        try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                    }
+                } finally {
+                    batchBuildInProgress = false;
+                    Platform.runLater(() -> {
+                        buildStatusLabel.setText("Batch build completed");
+                        buildMasterButton.setDisable(false);
+                        refreshButton.setDisable(false);
+                        repoTable.setVisible(true);
+                        buildLogContainer.setVisible(false);
+                        syncOptSoaRepository();
+                        refreshDeploymentVersionsFromConfiguredPath();
+                        hideOperationProgress();
+                        updateStatusLabel();
+                        repoTable.refresh();
+                    });
                 }
-
-                Platform.runLater(() -> {
-                    buildStatusLabel.setText("Batch build completed");
-                    buildMasterButton.setDisable(false);
-                    repoTable.setVisible(true);
-                    buildLogContainer.setVisible(false);
-                });
                 return null;
             }
         };
@@ -1194,34 +1417,9 @@ public class MainController implements Initializable {
                 return false;
             }
 
-            // We'll run the same steps as in startBuildProcess but synchronously here.
-            // Step 1: Git (skip for opt-soa)
-            if (!repository.getName().equalsIgnoreCase("opt-soa")) {
-                appendToBuildLog("=== Checking Git Repository ===\n");
-                if (!Files.exists(repoPath.resolve(".git"))) {
-                    appendToBuildLog("ERROR: Not a git repository: " + repoPath + "\n");
-                    return false;
-                }
-                // checkout and pull
-                ProcessBuilder gitCheckout = new ProcessBuilder("git", "checkout", "master");
-                gitCheckout.directory(repoPath.toFile());
-                gitCheckout.redirectErrorStream(true);
-                Process gitProcess = gitCheckout.start();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(gitProcess.getInputStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) appendToBuildLog(line + "\n");
-                }
-                int gitExit = gitProcess.waitFor();
-                if (gitExit != 0) { appendToBuildLog("ERROR: Git checkout failed: " + gitExit + "\n"); return false; }
-
-                ProcessBuilder gitPull = new ProcessBuilder("git", "pull");
-                gitPull.directory(repoPath.toFile());
-                gitPull.redirectErrorStream(true);
-                Process pull = gitPull.start();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(pull.getInputStream()))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) appendToBuildLog(line + "\n");
-                }
+            // Step 1: Git checkout + pull (opt-soa uses SOA Path; release builds expect master)
+            if (!runGitCheckoutAndPull(repoPath, repository)) {
+                return false;
             }
 
             // Step 2: Build (mvn for opt-soa, npm for others)
@@ -1240,11 +1438,12 @@ public class MainController implements Initializable {
                 int code = mvn.waitFor();
                 if (code != 0) { appendToBuildLog("ERROR: mvn failed with code " + code + "\n"); return false; }
             } else {
-                // npm build
-                appendToBuildLog("=== Running npm run build ===\n");
+                // npm build (build:war when the repo defines it, e.g. webmap)
+                String npmScript = resolveNpmBuildScript(repoPath);
+                appendToBuildLog("=== Running npm run " + npmScript + " ===\n");
                 ProcessBuilder npmBuild = System.getProperty("os.name").toLowerCase().contains("win")
-                        ? new ProcessBuilder("cmd", "/c", "npm", "run", "build")
-                        : new ProcessBuilder("npm", "run", "build");
+                        ? new ProcessBuilder("cmd", "/c", "npm", "run", npmScript)
+                        : new ProcessBuilder("npm", "run", npmScript);
                 npmBuild.directory(repoPath.toFile());
                 npmBuild.redirectErrorStream(true);
                 Process npm = npmBuild.start();
@@ -1256,9 +1455,22 @@ public class MainController implements Initializable {
                 if (code != 0) { appendToBuildLog("ERROR: npm build failed with code " + code + "\n"); return false; }
             }
 
-            // Start deployment for this repo synchronously
+            if (repository.getName().equalsIgnoreCase("opt-soa")) {
+                if (!deployOptSoaSpringJar(repoPath)) {
+                    return false;
+                }
+                runOnFxThreadAndWait(() -> {
+                    Path springJar = getSpringSoaDeployDirectory().resolve(OPT_SOA_EXEC_JAR);
+                    syncRepositoryDeploymentFromArtifact(repository, springJar);
+                    syncOptSoaRepository();
+                    refreshDeploymentVersionsFromConfiguredPath();
+                    repoTable.refresh();
+                });
+                return true;
+            }
+
             Task<Void> deployTask = createDeploymentTask(repository, repoPath);
-            deployTask.run(); // run in this thread synchronously
+            deployTask.run();
             return true;
         } catch (Exception e) {
             appendToBuildLog("ERROR: Batch build exception: " + e.getMessage() + "\n");
@@ -1276,42 +1488,61 @@ public class MainController implements Initializable {
             protected Void call() throws Exception {
                 try {
                     Platform.runLater(() -> appendToBuildLog("\n=== Starting Deployment ===\n"));
+                    if (batchBuildInProgress) {
+                        setActiveBatchRepositorySync(repository.getName(), "Deploying");
+                    }
                     
                     // Get deployment path
                     String deploymentPath = deploymentPathField.getText();
                     if (deploymentPath == null || deploymentPath.trim().isEmpty()) {
                         Platform.runLater(() -> {
                             appendToBuildLog("ERROR: No deployment path specified\n");
-                            buildStatusLabel.setText("Deployment Failed - No path");
-                            buildMasterButton.setDisable(false);
+                            if (!batchBuildInProgress) {
+                                buildStatusLabel.setText("Deployment Failed - No path");
+                                buildMasterButton.setDisable(false);
+                            }
                         });
                         return null;
                     }
                     
+                    if (repository.getName().equalsIgnoreCase("opt-soa")) {
+                        boolean deployed = deployOptSoaSpringJar(repoPath);
+                        Platform.runLater(() -> {
+                            if (batchBuildInProgress) {
+                                setActiveBatchRepository(repository.getName(), "Deploying");
+                            } else {
+                                buildStatusLabel.setText(deployed ? "Build & Deployment Successful" : "Deployment Failed");
+                                buildMasterButton.setDisable(false);
+                            }
+                            if (deployed) {
+                                Path springJar = getSpringSoaDeployDirectory().resolve(OPT_SOA_EXEC_JAR);
+                                syncRepositoryDeploymentFromArtifact(repository, springJar);
+                                syncOptSoaRepository();
+                                refreshDeploymentVersionsFromConfiguredPath();
+                                repoTable.refresh();
+                            }
+                        });
+                        return null;
+                    }
+
                     Path deploymentDir = Path.of(deploymentPath.trim());
                     if (!Files.exists(deploymentDir) || !Files.isDirectory(deploymentDir)) {
                         Platform.runLater(() -> {
                             appendToBuildLog("ERROR: Deployment directory does not exist: " + deploymentPath + "\n");
-                            buildStatusLabel.setText("Deployment Failed - Invalid path");
-                            buildMasterButton.setDisable(false);
+                            if (!batchBuildInProgress) {
+                                buildStatusLabel.setText("Deployment Failed - Invalid path");
+                                buildMasterButton.setDisable(false);
+                            }
                         });
                         return null;
                     }
                     
-                    // Special case for opt-soa: look for WAR files under SOA/target
-                    Path targetDir;
-                    if (repository.getName().equalsIgnoreCase("opt-soa")) {
-                        targetDir = repoPath.resolve("SOA").resolve("target");
-                    } else {
-                        targetDir = repoPath.resolve("target");
-                        if (!Files.exists(targetDir)) {
-                            // Try dist directory for some projects
-                            targetDir = repoPath.resolve("dist");
-                        }
-                        if (!Files.exists(targetDir)) {
-                            // Try build directory
-                            targetDir = repoPath.resolve("build");
-                        }
+                    Path targetDir = repoPath.resolve("target");
+                    if (!Files.exists(targetDir)) {
+                        targetDir = repoPath.resolve("dist");
+                    }
+                    if (!Files.exists(targetDir)) {
+                        targetDir = repoPath.resolve("build");
                     }
 
                     final Path finalTargetDir = targetDir;
@@ -1319,32 +1550,37 @@ public class MainController implements Initializable {
                     if (!Files.exists(finalTargetDir)) {
                         Platform.runLater(() -> {
                             appendToBuildLog("ERROR: No target/dist/build directory found in repository\n");
-                            buildStatusLabel.setText("Deployment Failed - No build output");
-                            buildMasterButton.setDisable(false);
+                            if (!batchBuildInProgress) {
+                                buildStatusLabel.setText("Deployment Failed - No build output");
+                                buildMasterButton.setDisable(false);
+                            }
                         });
                         return null;
                     }
                     
                     Platform.runLater(() -> appendToBuildLog("Looking for WAR files in: " + finalTargetDir + "\n"));
                     
-                    // Find WAR files
-                    List<Path> warFiles = new ArrayList<>();
-                    try (DirectoryStream<Path> stream = Files.newDirectoryStream(finalTargetDir, "*.war")) {
-                        for (Path warFile : stream) {
-                            warFiles.add(warFile);
-                        }
-                    }
+                    // Find WAR file(s) for this repository (prefer version matching repo package.json/pom)
+                    List<Path> warFiles = findWarFilesToDeploy(repoPath, repository);
                     
                     if (warFiles.isEmpty()) {
                         Platform.runLater(() -> {
                             appendToBuildLog("ERROR: No WAR files found in build output directory\n");
-                            buildStatusLabel.setText("Deployment Failed - No WAR files");
-                            buildMasterButton.setDisable(false);
+                            if (!batchBuildInProgress) {
+                                buildStatusLabel.setText("Deployment Failed - No WAR files");
+                                buildMasterButton.setDisable(false);
+                            }
                         });
                         return null;
                     }
                     
-                    // Deploy each WAR file
+                    String repoName = repository.getName();
+                    // Remove old WARs and JBoss marker files once before copying the new artifact
+                    deleteExistingWarFiles(deploymentDir, repoName, warFiles.stream()
+                        .map(p -> p.getFileName().toString())
+                        .collect(Collectors.toSet()));
+
+                    // Deploy each WAR file (normally exactly one)
                     for (Path warFile : warFiles) {
                         String warFileName = warFile.getFileName().toString();
                         
@@ -1354,10 +1590,6 @@ public class MainController implements Initializable {
                         
                         Platform.runLater(() -> appendToBuildLog("Preparing to deploy: " + warFileName + " (version: " + displayVersion + ")\n"));
                         
-                        // Find and delete existing WAR files for this repository
-                        String repoName = repository.getName();
-                        deleteExistingWarFiles(deploymentDir, repoName, warFileName);
-                        
                         // Deploy the new WAR file
                         Path deploymentTarget = deploymentDir.resolve(warFileName);
                         Platform.runLater(() -> appendToBuildLog("Deploying new WAR: " + warFileName + "\n"));
@@ -1365,20 +1597,29 @@ public class MainController implements Initializable {
                         Files.copy(warFile, deploymentTarget, StandardCopyOption.REPLACE_EXISTING);
                         
                         Platform.runLater(() -> appendToBuildLog("Successfully deployed: " + warFileName + " (version: " + displayVersion + ") -> " + deploymentTarget + "\n"));
+                        syncRepositoryDeploymentFromArtifact(repository, deploymentTarget);
                     }
                     
                     Platform.runLater(() -> {
                         appendToBuildLog("\n=== Deployment Completed Successfully ===\n");
                         appendToBuildLog("Deployed " + warFiles.size() + " WAR file(s) to: " + deploymentPath + "\n");
-                        buildStatusLabel.setText("Build & Deployment Successful");
-                        buildMasterButton.setDisable(false);
+                        if (batchBuildInProgress) {
+                            setActiveBatchRepository(repository.getName(), "Deploying");
+                        } else {
+                            buildStatusLabel.setText("Build & Deployment Successful");
+                            buildMasterButton.setDisable(false);
+                        }
+                        refreshDeploymentVersionsFromConfiguredPath();
+                        repoTable.refresh();
                     });
                     
                 } catch (Exception e) {
                     Platform.runLater(() -> {
                         appendToBuildLog("ERROR: Deployment failed - " + e.getMessage() + "\n");
-                        buildStatusLabel.setText("Deployment Failed");
-                        buildMasterButton.setDisable(false);
+                        if (!batchBuildInProgress) {
+                            buildStatusLabel.setText("Deployment Failed");
+                            buildMasterButton.setDisable(false);
+                        }
                     });
                     logger.error("Deployment failed", e);
                 }
@@ -1389,36 +1630,34 @@ public class MainController implements Initializable {
     }
     
     /**
-     * Delete existing WAR files for the repository in the deployment directory
+     * Delete existing WAR files and JBoss deployment markers for the repository.
      */
-    private void deleteExistingWarFiles(Path deploymentDir, String repoName, String newWarFileName) {
+    private void deleteExistingWarFiles(Path deploymentDir, String repoName, Set<String> newWarFileNames) {
         try {
-            // Create patterns to match WAR files for this repository
             List<String> patterns = createWarFilePatterns(repoName);
-            
-            Platform.runLater(() -> appendToBuildLog("Checking for existing WAR files for repository: " + repoName + "\n"));
-            
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(deploymentDir, "*.war")) {
-                for (Path existingWar : stream) {
-                    String existingWarName = existingWar.getFileName().toString();
-                    
-                    // Don't delete the same file we're about to deploy
-                    if (existingWarName.equals(newWarFileName)) {
+            Set<String> skipNames = newWarFileNames != null ? newWarFileNames : Set.of();
+
+            Platform.runLater(() -> appendToBuildLog("Checking for existing deployment artifacts for repository: " + repoName + "\n"));
+
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(deploymentDir)) {
+                for (Path existing : stream) {
+                    String existingName = existing.getFileName().toString();
+                    String warName = normalizeToWarFileName(existingName);
+
+                    if (skipNames.contains(existingName) || skipNames.contains(warName)) {
                         continue;
                     }
-                    
-                    // Check if this WAR file belongs to the same repository
-                    if (isWarFileForRepository(existingWarName, patterns)) {
-                        String oldVersion = extractVersionFromWarFile(existingWarName);
-                        String displayOldVersion = oldVersion.isEmpty() ? "unknown" : oldVersion;
-                        
-                        Platform.runLater(() -> appendToBuildLog("Found existing WAR file: " + existingWarName + " (version: " + displayOldVersion + ")\n"));
-                        Platform.runLater(() -> appendToBuildLog("Deleting old WAR file: " + existingWarName + "\n"));
-                        
-                        Files.delete(existingWar);
-                        
-                        Platform.runLater(() -> appendToBuildLog("Successfully deleted: " + existingWarName + "\n"));
+
+                    if (!isWarFileForRepository(warName, patterns)) {
+                        continue;
                     }
+
+                    String oldVersion = extractVersionFromWarFile(warName);
+                    String displayOldVersion = oldVersion.isEmpty() ? "unknown" : oldVersion;
+
+                    Platform.runLater(() -> appendToBuildLog("Removing old deployment artifact: " + existingName
+                        + " (version: " + displayOldVersion + ")\n"));
+                    Files.deleteIfExists(existing);
                 }
             }
         } catch (Exception e) {
@@ -1426,36 +1665,154 @@ public class MainController implements Initializable {
             logger.warn("Failed to clean up existing WAR files for repository: " + repoName, e);
         }
     }
-    
+
     /**
-     * Create patterns to match WAR files for a repository
+     * WAR files to deploy from build output for the given repository.
+     * Searches target/dist/build and repo root. Prefers a WAR whose version matches repo version.
+     */
+    private List<Path> findWarFilesToDeploy(Path repoPath, Repository repository) throws IOException {
+        String repoName = repository.getName();
+        List<String> patterns = createWarFilePatterns(repoName);
+        List<Path> matching = new ArrayList<>();
+        java.util.LinkedHashSet<Path> seen = new java.util.LinkedHashSet<>();
+
+        List<Path> searchDirs = new ArrayList<>();
+        for (String subDir : List.of("target", "dist", "build")) {
+            Path dir = repoPath.resolve(subDir);
+            if (Files.isDirectory(dir)) {
+                searchDirs.add(dir);
+            }
+        }
+        searchDirs.add(repoPath);
+
+        for (Path dir : searchDirs) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "*.war")) {
+                for (Path warFile : stream) {
+                    String name = warFile.getFileName().toString();
+                    if (isWarFileForRepository(name, patterns) && seen.add(warFile.toAbsolutePath())) {
+                        matching.add(warFile);
+                    }
+                }
+            }
+        }
+
+        if (matching.isEmpty()) {
+            for (Path dir : searchDirs) {
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "*.war")) {
+                    for (Path warFile : stream) {
+                        if (seen.add(warFile.toAbsolutePath())) {
+                            matching.add(warFile);
+                        }
+                    }
+                }
+            }
+            if (matching.size() > 1) {
+                Platform.runLater(() -> appendToBuildLog(
+                    "WARNING: Multiple WAR files in build output; could not match repository name — using best match.\n"));
+            }
+        }
+
+        if (matching.isEmpty()) {
+            return matching;
+        }
+        if (matching.size() == 1) {
+            return matching;
+        }
+
+        String repoVersion = repository.getRepoVersion();
+        if (repoVersion != null && !repoVersion.isBlank()) {
+            for (Path candidate : matching) {
+                String warVersion = extractVersionFromWarFile(candidate.getFileName().toString());
+                if (repoVersion.equals(warVersion)) {
+                    Platform.runLater(() -> appendToBuildLog(
+                        "Selected WAR matching repo version " + repoVersion + ": " + candidate.getFileName() + "\n"));
+                    return List.of(candidate);
+                }
+            }
+        }
+
+        matching.sort((a, b) -> Long.compare(
+            b.toFile().lastModified(),
+            a.toFile().lastModified()));
+        Path newest = matching.get(0);
+        Platform.runLater(() -> appendToBuildLog(
+            "Multiple matching WAR files in build output; deploying newest: " + newest.getFileName() + "\n"));
+        return List.of(newest);
+    }
+
+    private void syncRepositoryDeploymentFromArtifact(Repository repository, Path deployedArtifact) {
+        if (repository == null || deployedArtifact == null || !Files.exists(deployedArtifact)) {
+            return;
+        }
+        try {
+            String version = extractVersionFromArtifact(deployedArtifact);
+            if (version.isBlank()) {
+                return;
+            }
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("M/d/yyyy h:mm a");
+            String modified = sdf.format(new java.util.Date(Files.getLastModifiedTime(deployedArtifact).toMillis()));
+            final String deploymentVersion = version;
+            Platform.runLater(() -> {
+                repository.setDeploymentVersion(deploymentVersion);
+                repository.setDeploymentModified(modified);
+                repoTable.refresh();
+            });
+        } catch (IOException e) {
+            logger.warn("Could not sync deployment version from {}", deployedArtifact, e);
+        }
+    }
+
+    private String extractVersionFromArtifact(Path artifact) {
+        String name = artifact.getFileName().toString();
+        if (name.toLowerCase().endsWith(".jar")) {
+            return readImplementationVersionFromJar(artifact);
+        }
+        return extractVersionFromWarFile(name);
+    }
+
+    /**
+     * Create filename prefix patterns to match WAR files for a repository.
      */
     private List<String> createWarFilePatterns(String repoName) {
         List<String> patterns = new ArrayList<>();
-        
-        // Standard AMPT pattern: ampt-<repo>-<version>.war
+
         if (repoName.startsWith("opt-")) {
-            String amptName = repoName.substring(4); // Remove "opt-" prefix
+            String amptName = repoName.substring(4);
             patterns.add("ampt-" + amptName + "-");
+        } else {
+            // e.g. common-map-interface -> ampt-common-map-interface-<version>.war
+            patterns.add("ampt-" + repoName + "-");
         }
-        
-        // SOA pattern: opt-soa-<version>.war
+
         if ("opt-soa".equals(repoName)) {
             patterns.add("opt-soa-");
         }
-        
-        // Direct pattern: <repo>-<version>.war
-        patterns.add(repoName + "-");
-        
+
+        patterns.add(getWarArtifactPrefix(repoName) + "-");
+
         return patterns;
     }
-    
+
+    /**
+     * Map JBoss marker files (e.g. foo.war.failed) back to the WAR file name (foo.war).
+     */
+    private String normalizeToWarFileName(String fileName) {
+        int warMarker = fileName.toLowerCase().indexOf(".war.");
+        if (warMarker >= 0) {
+            return fileName.substring(0, warMarker + 4);
+        }
+        return fileName;
+    }
+
     /**
      * Check if a WAR file belongs to the given repository
      */
     private boolean isWarFileForRepository(String warFileName, List<String> patterns) {
+        if (warFileName == null || !warFileName.toLowerCase().endsWith(".war")) {
+            return false;
+        }
         for (String pattern : patterns) {
-            if (warFileName.startsWith(pattern) && warFileName.endsWith(".war")) {
+            if (warFileName.startsWith(pattern)) {
                 return true;
             }
         }
@@ -1466,18 +1823,13 @@ public class MainController implements Initializable {
      * Extract version from WAR file name
      */
     private String extractVersionFromWarFile(String warFileName) {
-        // Remove .war extension
-        String baseName = warFileName.replace(".war", "");
-        
-        // Try to extract version using regex patterns
-        // Pattern 1: ampt-<name>-<version> or opt-soa-<version> or <name>-<version>
-        Pattern versionPattern = Pattern.compile(".*-(\\d+(?:\\.\\d+)*(?:-[a-zA-Z0-9]+)?)$");
-        Matcher matcher = versionPattern.matcher(baseName);
-        
-        if (matcher.find()) {
+        if (warFileName == null || warFileName.isBlank()) {
+            return "";
+        }
+        Matcher matcher = WAR_FILE_VERSION_PATTERN.matcher(warFileName.trim());
+        if (matcher.matches()) {
             return matcher.group(1);
         }
-        
         return "";
     }
     
@@ -1488,6 +1840,8 @@ public class MainController implements Initializable {
         
         // Ensure we're on the JavaFX Application Thread
         final String safeText = text.replace("\r\n", "\n").replace("\r", "\n");
+        // Mirror the on-screen build log into the log file so it survives after the window is closed
+        buildFileLogger.info(safeText.stripTrailing());
         
         if (Platform.isFxApplicationThread()) {
             try {
@@ -1555,6 +1909,75 @@ public class MainController implements Initializable {
         return false;
     }
 
+    private boolean shouldHighlightRepositoryRow(Repository repository) {
+        if (repository == null || repository.isIgnore()) {
+            return false;
+        }
+        if (isRepoVersionBehindTarget(repository)) {
+            return true;
+        }
+        String repoVer = repository.getRepoVersion();
+        String depVer = repository.getDeploymentVersion();
+        if (repoVer != null && !repoVer.isBlank() && depVer != null && !depVer.isBlank() && !repoVer.equals(depVer)) {
+            return true;
+        }
+        return repoVer != null && !repoVer.isBlank() && (depVer == null || depVer.isBlank());
+    }
+
+    /** True when a targeted version is set and repo version sorts lower (e.g. 5.20.1 vs 5.24.0). */
+    private boolean isRepoVersionBehindTarget(Repository repository) {
+        String repoVer = repository.getRepoVersion();
+        String targetedVer = repository.getTargetedVersion();
+        if (repoVer == null || repoVer.isBlank() || targetedVer == null || targetedVer.isBlank()) {
+            return false;
+        }
+        return compareVersionStrings(repoVer, targetedVer) < 0;
+    }
+
+    private int compareVersionStrings(String left, String right) {
+        int[] leftParts = parseVersionParts(left);
+        int[] rightParts = parseVersionParts(right);
+        int length = Math.max(leftParts.length, rightParts.length);
+        for (int i = 0; i < length; i++) {
+            int lv = i < leftParts.length ? leftParts[i] : 0;
+            int rv = i < rightParts.length ? rightParts[i] : 0;
+            if (lv != rv) {
+                return Integer.compare(lv, rv);
+            }
+        }
+        return 0;
+    }
+
+    private int[] parseVersionParts(String version) {
+        String normalized = version.trim();
+        int dash = normalized.indexOf('-');
+        if (dash > 0) {
+            normalized = normalized.substring(0, dash);
+        }
+        String[] segments = normalized.split("\\.");
+        int[] parts = new int[segments.length];
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i].replaceAll("[^0-9].*", "");
+            if (segment.isEmpty()) {
+                parts[i] = 0;
+            } else {
+                try {
+                    parts[i] = Integer.parseInt(segment);
+                } catch (NumberFormatException e) {
+                    parts[i] = 0;
+                }
+            }
+        }
+        return parts;
+    }
+
+    private void refreshDeploymentVersionsFromConfiguredPath() {
+        String depPath = deploymentPathField.getText();
+        if (depPath != null && !depPath.isBlank()) {
+            updateDeploymentVersions(Path.of(depPath.trim()));
+        }
+    }
+
     /**
      * Update deploymentVersion for repositories by scanning the deployment folder for .war files
      * Expected filename pattern example: ampt-orgchart-3.4.0.war -> repo name: opt-orgchart, version: 3.4.0
@@ -1567,99 +1990,473 @@ public class MainController implements Initializable {
             }
             // Build a map from repo key (e.g., orgchart) to version from WAR files
             Map<String, String> deployedVersions = new HashMap<>();
-            File[] warFiles = depDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".war"));
+            // When multiple WARs map to the same suffix, keep the newest file on disk
+            Map<String, Long> deployedVersionTimestamps = new HashMap<>();
             // Map from war file name (lowercase) to last modified date string
             Map<String, String> warModifiedMap = new HashMap<>();
+            Map<String, String> deployedArtifactNames = new HashMap<>();
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("M/d/yyyy h:mm a");
+
+            File[] warFiles = depDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".war"));
             if (warFiles != null) {
                 logger.info("Found {} WAR files in deployment directory", warFiles.length);
-                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("M/d/yyyy h:mm a");
                 for (File war : warFiles) {
                     String name = war.getName().toLowerCase();
                     logger.debug("Processing WAR file: {}", name);
                     String modified = sdf.format(new java.util.Date(war.lastModified()));
                     warModifiedMap.put(name, modified);
 
-                    // Handle opt-soa pattern: opt-soa-<version>.war
-                    java.util.regex.Matcher soaMatcher = java.util.regex.Pattern
-                        .compile("^opt-soa-([0-9][a-z0-9.-]*)\\.war$")
-                        .matcher(name);
-                    if (soaMatcher.find()) {
-                        String version = soaMatcher.group(1);
-                        deployedVersions.put("soa", version);
+                    Matcher optSoaMatcher = OPT_SOA_DEPLOYMENT_PATTERN.matcher(name);
+                    if (optSoaMatcher.matches()) {
+                        // opt-soa is deployed via Spring SOA jar, not JBoss WARs
                         continue;
                     }
 
-                    // Handle webmap and webmap-data-service
-                    java.util.regex.Matcher webmapMatcher = java.util.regex.Pattern
-                        .compile("^(webmap|webmap-data-service)-([0-9][a-z0-9.-]*)\\.war$")
-                        .matcher(name);
-                    if (webmapMatcher.find()) {
-                        String repoKey = webmapMatcher.group(1);
-                        String version = webmapMatcher.group(2);
-                        deployedVersions.put(repoKey, version);
+                    Matcher webmapMatcher = WEBMAP_DEPLOYMENT_WAR_PATTERN.matcher(name);
+                    if (webmapMatcher.matches()) {
+                        putDeployedVersion(deployedVersions, deployedVersionTimestamps,
+                            "webmap", webmapMatcher.group(1), war);
                         continue;
                     }
 
-                    // Handle regular ampt pattern: ampt-<suffix>-<version>.war
-                    java.util.regex.Matcher amptMatcher = java.util.regex.Pattern
-                        .compile("^ampt-([a-z0-9-]+)-([0-9][a-z0-9.-]*)\\.war$")
+                    java.util.regex.Matcher webmapDataMatcher = java.util.regex.Pattern
+                        .compile("^webmap-data-service-(\\d+(?:\\.\\d+)*(?:-[a-zA-Z0-9]+)?)\\.war$")
                         .matcher(name);
-                    if (amptMatcher.find()) {
-                        String suffix = amptMatcher.group(1);
-                        String version = amptMatcher.group(2);
-                        deployedVersions.put(suffix, version);
+                    if (webmapDataMatcher.matches()) {
+                        putDeployedVersion(deployedVersions, deployedVersionTimestamps,
+                            "webmap-data-service", webmapDataMatcher.group(1), war);
+                        continue;
+                    }
+
+                    // ampt-<suffix>-<version>.war (suffix may contain hyphens)
+                    Matcher amptMatcher = AMPT_WAR_FILE_PATTERN.matcher(name);
+                    if (amptMatcher.matches()) {
+                        putDeployedVersion(deployedVersions, deployedVersionTimestamps,
+                            amptMatcher.group(1), amptMatcher.group(2), war);
                     }
                 }
             }
+
+            // opt-soa: version from SOA Deploy Path only (opt-soa-exec.jar), not JBoss deployments
+            applyOptSoaSpringJarDeploymentVersion(deployedVersions, deployedVersionTimestamps,
+                warModifiedMap, deployedArtifactNames, sdf);
 
             // Clear previous deployment versions and modified dates
             repositories.forEach(r -> { r.setDeploymentVersion(""); r.setDeploymentModified(""); });
 
-            if (!deployedVersions.isEmpty()) {
-                for (Repository repo : repositories) {
-                    String repoName = repo.getName().toLowerCase();
-                    String warFileName = null;
-                    String version = null;
-                    // map opt-<suffix> -> <suffix>
-                    if (repoName.startsWith("opt-")) {
-                        String suffix = repoName.substring(4);
-                        version = deployedVersions.get(suffix);
-                        if (version != null) {
-                            repo.setDeploymentVersion(version);
-                            warFileName = "ampt-" + suffix + "-" + version + ".war";
-                        }
+            for (Repository repo : repositories) {
+                String repoName = repo.getName().toLowerCase();
+                String warFileName = null;
+                String version = null;
+                // map opt-<suffix> -> <suffix>
+                if (repoName.startsWith("opt-")) {
+                    String suffix = repoName.substring(4);
+                    version = deployedVersions.get(suffix);
+                    if (version != null) {
+                        repo.setDeploymentVersion(version);
+                        warFileName = "ampt-" + suffix + "-" + version + ".war";
                     }
-                    // Handle webmap and webmap-data-service directly
-                    if (repoName.equals("webmap") || repoName.equals("webmap-data-service")) {
-                        version = deployedVersions.get(repoName);
-                        if (version != null) {
-                            repo.setDeploymentVersion(version);
+                }
+                // Handle webmap and webmap-data-service directly
+                if (repoName.equals("webmap") || repoName.equals("webmap-data-service")) {
+                    version = deployedVersions.get(repoName);
+                    if (version != null) {
+                        repo.setDeploymentVersion(version);
+                        warFileName = getWarArtifactPrefix(repoName) + "-" + version + ".war";
+                        if ("webmap-data-service".equals(repoName)) {
                             warFileName = repoName + "-" + version + ".war";
                         }
                     }
-                    // Handle opt-soa
-                    if (repoName.equals("opt-soa")) {
-                        version = deployedVersions.get("soa");
-                        if (version != null) {
-                            repo.setDeploymentVersion(version);
-                            warFileName = "opt-soa-" + version + ".war";
-                        }
+                }
+                // Handle opt-soa
+                if (repoName.equals("opt-soa")) {
+                    version = deployedVersions.get("soa");
+                    if (version != null) {
+                        repo.setDeploymentVersion(version);
+                        warFileName = deployedArtifactNames.getOrDefault("soa", "opt-soa-" + version + ".war");
                     }
-                    // Set deploymentModified if warFileName found
-                    if (warFileName != null) {
-                        String modified = warModifiedMap.get(warFileName.toLowerCase());
-                        if (modified != null) {
-                            repo.setDeploymentModified(modified);
+                }
+                // Repos without opt- prefix (e.g. common-map-interface) use ampt-<name>-<version>.war
+                if (version == null && !repoName.startsWith("opt-")
+                        && !repoName.equals("webmap") && !repoName.equals("webmap-data-service")) {
+                    version = deployedVersions.get(repoName);
+                    if (version != null) {
+                        repo.setDeploymentVersion(version);
+                        warFileName = "ampt-" + repoName + "-" + version + ".war";
+                    }
+                }
+                // Set deploymentModified if warFileName found
+                if (warFileName != null) {
+                    String modified = warModifiedMap.get(warFileName.toLowerCase());
+                    if (modified != null) {
+                        repo.setDeploymentModified(modified);
+                    }
+                }
+            }
+
+            // Ensure webmap row matches webmap2-*.war even if generic parsing missed it
+            applyWebmapDeploymentFromDirectory(depDir, sdf);
+
+            repoTable.refresh();
+            logger.info("Updated deployment versions for {} repositories ({} WAR mappings)",
+                    repositories.stream().filter(r -> !r.getDeploymentVersion().isEmpty()).count(),
+                    deployedVersions.size());
+        } catch (Exception e) {
+            logger.error("Error updating deployment versions from {}", deploymentPath, e);
+        }
+    }
+
+    private void applyWebmapDeploymentFromDirectory(File depDir, java.text.SimpleDateFormat sdf) {
+        Repository webmapRepo = repositories.stream()
+            .filter(r -> "webmap".equalsIgnoreCase(r.getName()))
+            .findFirst()
+            .orElse(null);
+        if (webmapRepo == null) {
+            return;
+        }
+
+        File[] warFiles = depDir.listFiles((dir, name) -> {
+            String lower = name.toLowerCase();
+            return lower.endsWith(".war") && lower.startsWith("webmap2-");
+        });
+        if (warFiles == null || warFiles.length == 0) {
+            return;
+        }
+
+        File newest = null;
+        String version = null;
+        for (File war : warFiles) {
+            Matcher matcher = WEBMAP_DEPLOYMENT_WAR_PATTERN.matcher(war.getName().toLowerCase());
+            if (!matcher.matches()) {
+                continue;
+            }
+            if (newest == null || war.lastModified() >= newest.lastModified()) {
+                newest = war;
+                version = matcher.group(1);
+            }
+        }
+        if (version == null || version.isBlank()) {
+            return;
+        }
+
+        webmapRepo.setDeploymentVersion(version);
+        webmapRepo.setDeploymentModified(sdf.format(new java.util.Date(newest.lastModified())));
+        logger.info("Applied webmap deployment from {} -> version {}", newest.getName(), version);
+    }
+
+    private void putDeployedVersion(Map<String, String> deployedVersions,
+                                    Map<String, Long> deployedVersionTimestamps,
+                                    String repoKey,
+                                    String version,
+                                    File warFile) {
+        long modified = warFile.lastModified();
+        Long previous = deployedVersionTimestamps.get(repoKey);
+        if (previous == null || modified >= previous) {
+            deployedVersions.put(repoKey, version);
+            deployedVersionTimestamps.put(repoKey, modified);
+        }
+    }
+
+    private void recordOptSoaDeployment(Map<String, String> deployedVersions,
+                                        Map<String, Long> deployedVersionTimestamps,
+                                        Map<String, String> warModifiedMap,
+                                        Map<String, String> deployedArtifactNames,
+                                        String version,
+                                        File artifact) {
+        long modified = artifact.lastModified();
+        Long previous = deployedVersionTimestamps.get("soa");
+        if (previous == null || modified >= previous) {
+            deployedVersions.put("soa", version);
+            deployedVersionTimestamps.put("soa", modified);
+            String artifactName = artifact.getName();
+            deployedArtifactNames.put("soa", artifactName);
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("M/d/yyyy h:mm a");
+            warModifiedMap.put(artifactName.toLowerCase(), sdf.format(new java.util.Date(modified)));
+            logger.info("Detected opt-soa deployment: {} (version {})", artifact.getAbsolutePath(), version);
+        }
+    }
+
+    /**
+     * Scan JBoss standalone/tmp (and deployments) for opt-soa exploded deployments or WAR files.
+     */
+    private Path getSpringSoaDeployDirectory() {
+        String path = soaDeployPathLabel != null ? soaDeployPathLabel.getText() : null;
+        if (path == null || path.isBlank()) {
+            path = DEFAULT_SPRING_SOA_DEPLOY_PATH;
+        }
+        return Paths.get(path.trim().replace('/', File.separatorChar).replace('\\', File.separatorChar));
+    }
+
+    private String readImplementationVersionFromJar(Path jarPath) {
+        try (JarFile jar = new JarFile(jarPath.toFile())) {
+            Manifest manifest = jar.getManifest();
+            if (manifest != null) {
+                String version = manifest.getMainAttributes().getValue("Implementation-Version");
+                if (version != null && !version.isBlank()) {
+                    return version.trim();
+                }
+            }
+        } catch (IOException e) {
+            logger.warn("Could not read manifest from {}", jarPath, e);
+        }
+        return "";
+    }
+
+    private Path findBuiltOptSoaExecJar(Path optSoaProjectPath) {
+        Path[] searchDirs = {
+            optSoaProjectPath.resolve("SOA").resolve("target"),
+            optSoaProjectPath.resolve("target")
+        };
+        Path newest = null;
+        long newestTime = -1;
+        for (Path dir : searchDirs) {
+            if (!Files.isDirectory(dir)) {
+                continue;
+            }
+            Path legacy = dir.resolve(OPT_SOA_EXEC_JAR);
+            if (Files.isRegularFile(legacy)) {
+                try {
+                    long t = Files.getLastModifiedTime(legacy).toMillis();
+                    if (t >= newestTime) {
+                        newest = legacy;
+                        newestTime = t;
+                    }
+                } catch (IOException e) {
+                    logger.debug("Could not read timestamp for {}", legacy, e);
+                }
+            }
+            // Spring Boot repackage of a war-packaged module yields opt-soa-<ver>-exec.war;
+            // it is deployed renamed as opt-soa-exec.jar.
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "opt-soa*-exec.{jar,war}")) {
+                for (Path candidate : stream) {
+                    if (!Files.isRegularFile(candidate)) {
+                        continue;
+                    }
+                    long t = Files.getLastModifiedTime(candidate).toMillis();
+                    if (newest == null || t >= newestTime) {
+                        newest = candidate;
+                        newestTime = t;
+                    }
+                }
+            } catch (IOException e) {
+                logger.debug("Could not scan {} for opt-soa exec jar: {}", dir, e.getMessage());
+            }
+        }
+        if (newest != null) {
+            appendToBuildLog("Using built Spring SOA artifact: " + newest.getFileName() + "\n");
+        }
+        return newest;
+    }
+
+    private boolean deployOptSoaSpringJar(Path optSoaProjectPath) {
+        try {
+            appendToBuildLog("\n=== Starting Spring SOA deployment ===\n");
+            Path deployDir = getSpringSoaDeployDirectory();
+            if (!Files.isDirectory(deployDir)) {
+                appendToBuildLog("ERROR: SOA deploy directory does not exist: " + deployDir + "\n");
+                return false;
+            }
+
+            Path sourceJar = findBuiltOptSoaExecJar(optSoaProjectPath);
+            if (sourceJar == null) {
+                appendToBuildLog("ERROR: no opt-soa-<version>-exec.war/.jar found under SOA/target or target\n");
+                return false;
+            }
+
+            String version = readImplementationVersionFromJar(sourceJar);
+            appendToBuildLog("Deploying " + OPT_SOA_EXEC_JAR
+                + " (version: " + (version.isEmpty() ? "unknown" : version) + ")\n");
+            appendToBuildLog("Source: " + sourceJar + "\n");
+            appendToBuildLog("Target directory: " + deployDir + "\n");
+
+            Path targetJar = deployDir.resolve(OPT_SOA_EXEC_JAR);
+            if (Files.exists(targetJar)) {
+                String backupName = OPT_SOA_EXEC_JAR + ".backup-"
+                    + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(new java.util.Date());
+                Path backupPath = deployDir.resolve(backupName);
+                Files.copy(targetJar, backupPath, StandardCopyOption.REPLACE_EXISTING);
+                appendToBuildLog("Backed up existing JAR to " + backupName + "\n");
+            }
+
+            // A running Spring SOA JVM holds opt-soa-exec.jar open; Windows will not let us overwrite it.
+            boolean wasRunning = stopRunningOptSoaProcesses();
+
+            copyWithRetry(sourceJar, targetJar);
+            appendToBuildLog("Successfully deployed: " + targetJar + "\n");
+
+            if (wasRunning) {
+                restartOptSoaService(deployDir);
+            } else {
+                appendToBuildLog("Spring SOA was not running; not starting it.\n");
+            }
+
+            appendToBuildLog("\n=== Spring SOA Deployment Completed ===\n");
+            return true;
+        } catch (Exception e) {
+            appendToBuildLog("ERROR: Spring SOA deployment failed - " + e.getMessage() + "\n");
+            logger.error("Spring SOA deployment failed", e);
+            return false;
+        }
+    }
+
+    /** PIDs of java processes whose command line runs opt-soa-exec.jar. */
+    private List<Long> findRunningOptSoaProcessIds() {
+        List<Long> pids = new ArrayList<>();
+        boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
+        if (windows) {
+            String script = "Get-CimInstance Win32_Process -Filter \"name='java.exe' or name='javaw.exe'\" "
+                + "| Where-Object { $_.CommandLine -like '*" + OPT_SOA_EXEC_JAR + "*' } "
+                + "| ForEach-Object { $_.ProcessId }";
+            // -EncodedCommand avoids Windows argument quoting mangling the embedded quotes in the script
+            String encoded = java.util.Base64.getEncoder()
+                .encodeToString(script.getBytes(java.nio.charset.StandardCharsets.UTF_16LE));
+            try {
+                ProcessBuilder pb = new ProcessBuilder("powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded);
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String trimmed = line.trim();
+                        if (trimmed.matches("\\d+")) {
+                            pids.add(Long.parseLong(trimmed));
                         }
                     }
                 }
-                repoTable.refresh();
-                logger.info("Updated deployment versions and modified dates for {} repositories based on {} WAR files",
-                        repositories.stream().filter(r -> !r.getDeploymentVersion().isEmpty()).count(),
-                        deployedVersions.size());
+                p.waitFor();
+            } catch (Exception e) {
+                logger.warn("Could not query running Spring SOA processes", e);
             }
-        } catch (Exception e) {
-            logger.error("Error updating deployment versions from {}", deploymentPath, e);
+        } else {
+            ProcessHandle.allProcesses()
+                .filter(h -> h.info().commandLine().map(c -> c.contains(OPT_SOA_EXEC_JAR)).orElse(false))
+                .forEach(h -> pids.add(h.pid()));
+        }
+        pids.remove(Long.valueOf(ProcessHandle.current().pid()));
+        logger.info("Running Spring SOA process ids: {}", pids);
+        return pids;
+    }
+
+    /** Stop running Spring SOA JVM(s). Returns true if at least one was running. */
+    private boolean stopRunningOptSoaProcesses() {
+        List<Long> pids = findRunningOptSoaProcessIds();
+        if (pids.isEmpty()) {
+            appendToBuildLog("No running Spring SOA process found.\n");
+            return false;
+        }
+        for (long pid : pids) {
+            ProcessHandle.of(pid).ifPresent(handle -> {
+                appendToBuildLog("Stopping running Spring SOA (PID " + pid + ")...\n");
+                handle.destroy();
+                try {
+                    handle.onExit().get(20, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (java.util.concurrent.TimeoutException te) {
+                    appendToBuildLog("PID " + pid + " did not exit; forcing...\n");
+                    handle.destroyForcibly();
+                    try {
+                        handle.onExit().get(10, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (Exception ignored) {
+                        // fall through; copyWithRetry will report if the file is still locked
+                    }
+                } catch (Exception e) {
+                    logger.warn("Error waiting for PID {} to exit", pid, e);
+                }
+                appendToBuildLog("Stopped PID " + pid + "\n");
+            });
+        }
+        return true;
+    }
+
+    /** Copy with a few retries; Windows can hold the file handle briefly after the JVM exits. */
+    private void copyWithRetry(Path source, Path target) throws IOException, InterruptedException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= 10; attempt++) {
+            try {
+                Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+                return;
+            } catch (java.nio.file.FileSystemException e) {
+                last = e;
+                appendToBuildLog("Target still locked (attempt " + attempt + "/10), retrying...\n");
+                Thread.sleep(1000);
+            }
+        }
+        throw last;
+    }
+
+    /** Relaunch Spring SOA using the startup script that lives next to the jar. */
+    private void restartOptSoaService(Path deployDir) {
+        Path startupScript = deployDir.resolve("startup SOA.vbs");
+        if (!Files.isRegularFile(startupScript)) {
+            appendToBuildLog("WARNING: " + startupScript.getFileName()
+                + " not found; start Spring SOA manually.\n");
+            return;
+        }
+        try {
+            appendToBuildLog("Restarting Spring SOA via " + startupScript.getFileName() + "...\n");
+            ProcessBuilder pb = new ProcessBuilder("wscript.exe", startupScript.toString());
+            pb.directory(deployDir.toFile());
+            pb.redirectErrorStream(true);
+            pb.start();
+            appendToBuildLog("Spring SOA start requested.\n");
+        } catch (IOException e) {
+            appendToBuildLog("WARNING: could not launch " + startupScript.getFileName()
+                + " - " + e.getMessage() + "\n");
+            logger.warn("Failed to restart Spring SOA", e);
+        }
+    }
+
+    private void applyOptSoaSpringJarDeploymentVersion(Map<String, String> deployedVersions,
+                                                      Map<String, Long> deployedVersionTimestamps,
+                                                      Map<String, String> warModifiedMap,
+                                                      Map<String, String> deployedArtifactNames,
+                                                      java.text.SimpleDateFormat sdf) {
+        Path jarPath = getSpringSoaDeployDirectory().resolve(OPT_SOA_EXEC_JAR);
+        if (!Files.isRegularFile(jarPath)) {
+            logger.debug("No Spring SOA executable at {}", jarPath);
+            return;
+        }
+
+        String version = readImplementationVersionFromJar(jarPath);
+        if (version.isBlank()) {
+            logger.warn("Spring SOA jar exists but Implementation-Version is missing: {}", jarPath);
+            return;
+        }
+
+        File jarFile = jarPath.toFile();
+        deployedVersions.put("soa", version);
+        deployedVersionTimestamps.put("soa", jarFile.lastModified());
+        deployedArtifactNames.put("soa", OPT_SOA_EXEC_JAR);
+        warModifiedMap.put(OPT_SOA_EXEC_JAR.toLowerCase(), sdf.format(new java.util.Date(jarFile.lastModified())));
+        logger.info("opt-soa deployment version from Spring SOA jar {}: {}", jarPath, version);
+    }
+
+    private void scanOptSoaInSiblingLocations(Path deploymentPath,
+                                              Map<String, String> deployedVersions,
+                                              Map<String, Long> deployedVersionTimestamps,
+                                              Map<String, String> warModifiedMap,
+                                              Map<String, String> deployedArtifactNames) {
+        Path standaloneDir = deploymentPath.getParent();
+        if (standaloneDir == null) {
+            return;
+        }
+        List<Path> locations = List.of(deploymentPath, standaloneDir.resolve("tmp"));
+        for (Path location : locations) {
+            if (!Files.isDirectory(location)) {
+                continue;
+            }
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(location)) {
+                for (Path entry : stream) {
+                    String name = entry.getFileName().toString();
+                    Matcher matcher = OPT_SOA_DEPLOYMENT_PATTERN.matcher(name);
+                    if (!matcher.matches()) {
+                        continue;
+                    }
+                    recordOptSoaDeployment(deployedVersions, deployedVersionTimestamps, warModifiedMap,
+                        deployedArtifactNames, matcher.group(1), entry.toFile());
+                }
+            } catch (IOException e) {
+                logger.debug("Could not scan {} for opt-soa: {}", location, e.getMessage());
+            }
         }
     }
     

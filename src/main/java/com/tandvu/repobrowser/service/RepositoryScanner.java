@@ -1,5 +1,7 @@
 package com.tandvu.repobrowser.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tandvu.repobrowser.model.Repository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +20,7 @@ import java.util.stream.Collectors;
 public class RepositoryScanner {
     
     private static final Logger logger = LoggerFactory.getLogger(RepositoryScanner.class);
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     
     /**
      * Scan the given base path for repositories (top-level directories only)
@@ -113,12 +116,13 @@ public class RepositoryScanner {
         Path packageJson = repoPath.resolve("package.json");
         if (Files.exists(packageJson)) {
             try {
-                String content = Files.readString(packageJson);
-                // Simple regex to extract version from package.json
-                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"");
-                java.util.regex.Matcher matcher = pattern.matcher(content);
-                if (matcher.find()) {
-                    return matcher.group(1);
+                JsonNode root = JSON_MAPPER.readTree(Files.readString(packageJson));
+                JsonNode versionNode = root.get("version");
+                if (versionNode != null && versionNode.isTextual()) {
+                    String version = versionNode.asText().trim();
+                    if (!version.isEmpty()) {
+                        return version;
+                    }
                 }
             } catch (Exception e) {
                 logger.debug("Error reading package.json for {}: {}", repoPath.getFileName(), e.getMessage());
