@@ -911,7 +911,35 @@ public class MainController implements Initializable {
             appendToBuildLog("WARNING: Git pull failed with exit code: " + pullExit + "\n");
             appendToBuildLog("Continuing with build...\n");
         }
+        refreshRepositoryVersionFromDisk(repository, repoPath);
         return true;
+    }
+
+    /**
+     * Re-read version from package.json/pom on disk so build/deploy logic matches master after git pull.
+     */
+    private void refreshRepositoryVersionFromDisk(Repository repository, Path repoPath) {
+        String detected;
+        if (repository.getName().equalsIgnoreCase("opt-soa")) {
+            detected = detectOptSoaRepoVersion(repoPath);
+        } else {
+            detected = repositoryScanner.detectRepositoryVersion(repoPath);
+        }
+        if (detected == null || detected.isBlank()) {
+            appendToBuildLog("WARNING: Could not detect repository version from disk\n");
+            return;
+        }
+        String previous = repository.getRepoVersion();
+        final String newVersion = detected;
+        runOnFxThreadAndWait(() -> {
+            repository.setRepoVersion(newVersion);
+            repoTable.refresh();
+        });
+        if (!newVersion.equals(previous)) {
+            appendToBuildLog("Updated repo version after git pull: " + previous + " -> " + newVersion + "\n");
+        } else {
+            appendToBuildLog("Repo version on disk: " + newVersion + "\n");
+        }
     }
 
     private Path getOptSoaProjectPath() {
@@ -1182,6 +1210,7 @@ public class MainController implements Initializable {
                                 appendToBuildLog("Continuing with build...\n");
                             });
                         }
+                        refreshRepositoryVersionFromDisk(finalRepository, finalRepoPath);
                     }
 
                     // Step 4: Build logic for opt-soa or others
@@ -1753,6 +1782,7 @@ public class MainController implements Initializable {
             String modified = sdf.format(new java.util.Date(Files.getLastModifiedTime(deployedArtifact).toMillis()));
             final String deploymentVersion = version;
             Platform.runLater(() -> {
+                repository.setRepoVersion(deploymentVersion);
                 repository.setDeploymentVersion(deploymentVersion);
                 repository.setDeploymentModified(modified);
                 repoTable.refresh();
